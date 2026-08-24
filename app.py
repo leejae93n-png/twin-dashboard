@@ -34,56 +34,57 @@ def format_time_col(col_name):
             return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
     return col_str
 
-def parse_date_to_str(val):
-    """구글 시트 날짜가 문자열, ISO 8601, Timestamp 등 어떤 형태여도 YYYY-MM-DD로 강제 정형화"""
-    if pd.isna(val) or str(val).strip() == "":
-        return ""
-    val_str = str(val).strip()
-    # T 및 시분초 잘라내기
-    if "T" in val_str:
-        val_str = val_str.split("T")[0]
-    if " " in val_str:
-        val_str = val_str.split(" ")[0]
+def parse_clean_date(val):
+    if pd.isna(val) or str(val).strip() == "": return ""
+    v = str(val).strip().split("T")[0].split(" ")[0]
     try:
-        dt = pd.to_datetime(val_str)
-        return dt.strftime("%Y-%m-%d")
-    except Exception:
-        return val_str
+        return pd.to_datetime(v).strftime("%Y-%m-%d")
+    except:
+        return v
 
 def load_data_from_gas(sheet_name):
-    if not GAS_URL: return pd.DataFrame()
+    if not GAS_URL: 
+        st.error("⚠️ Streamlit Secrets에 GAS_URL이 설정되지 않았습니다.")
+        return pd.DataFrame()
     try:
         timestamp = int(time.time())
-        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=8)
+        # GAS 리다이렉트 추적 허용 (allow_redirects=True)
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=10, allow_redirects=True)
         data = res.json()
         if not data or len(data) <= 1: return pd.DataFrame()
-        df = pd.DataFrame(data[1:], columns=data[0])
         
-        # 1. 헤더 정규화 (1:00 -> 01:00)
+        df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [format_time_col(c) for c in df.columns]
         
-        # 2. 날짜 데이터 강제 정형화 (핵심)
         if "날짜" in df.columns:
-            df["날짜"] = df["날짜"].apply(parse_date_to_str)
-            df = df[df["날짜"] != ""] # 빈 날짜 제거
-            
-        # 3. 아동명 공백 제거
+            df["날짜"] = df["날짜"].apply(parse_clean_date)
+            df = df[df["날짜"] != ""]
         if "아동" in df.columns:
             df["아동"] = df["아동"].astype(str).str.strip()
-            
         return df
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ 구글 시트 데이터 로드 실패 [{sheet_name}]: {e}")
         return pd.DataFrame()
 
 def save_data_to_gas(sheet_name, df):
-    if not GAS_URL: return
+    if not GAS_URL:
+        st.error("⚠️ GAS_URL 미설정으로 저장이 취소되었습니다.")
+        return
     try:
         df_clean = df.fillna(0)
         rows = [df_clean.columns.tolist()] + df_clean.values.tolist()
         payload = {"sheet": sheet_name, "rows": rows}
-        requests.post(GAS_URL, data=json.dumps(payload), timeout=8)
-    except Exception:
-        pass
+        
+        # GAS POST 리다이렉트 방지 및 정상 통신 보장
+        headers = {'Content-Type': 'application/json'}
+        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=12, allow_redirects=True)
+        
+        if res.status_code == 200 and ("SUCCESS" in res.text or res.text == ""):
+            st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 동기화되었습니다!", icon="💾")
+        else:
+            st.warning(f"⚠️ 구글 시트 저장 응답 확인 필요: {res.status_code} - {res.text}")
+    except Exception as e:
+        st.error(f"❌ 구글 시트 통신 연결 오류: {e}")
 
 def load_feeding_data():
     df = load_data_from_gas("Feeding")
@@ -170,14 +171,12 @@ def render_child_section(child_name, container):
 
         today_str = get_now_kst().strftime("%Y-%m-%d")
         
-        # 아동별 데이터 필터링 및 오름차순 정렬
         if not df_feeding.empty and "아동" in df_feeding.columns and "날짜" in df_feeding.columns:
             child_df = df_feeding[df_feeding["아동"] == child_name].copy()
             child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
         else:
             child_df = pd.DataFrame()
         
-        # 오늘 날짜 행 없을 경우 자동 추가
         if df_feeding.empty or child_df.empty or today_str not in child_df["날짜"].values:
             default_w = 3.5 if child_name == "원빈" else 4.1
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": default_w}
@@ -188,7 +187,6 @@ def render_child_section(child_name, container):
             child_df = df_feeding[df_feeding["아동"] == child_name].copy()
             child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
 
-        # 몸무게 처리
         default_base_weight = 3.5 if child_name == "원빈" else 4.1
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce").fillna(default_base_weight)
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill().fillna(default_base_weight)
@@ -229,7 +227,6 @@ def render_child_section(child_name, container):
         with k3: st.metric("오늘 배변/수면", f"💩{poop_cnt} 🟡{pee_cnt}", f"😴 {int(total_sleep_min)//60}시간 {int(total_sleep_min)%60}분")
 
         closest_slot_idx = get_closest_slot(current_time_cols, get_now_kst().time())
-        current_target_slot = current_time_cols[closest_slot_idx]
 
         # --- 2. 실시간 1초 원클릭 기록 ---
         st.subheader("⚡ 실시간 1초 원클릭 기록 (현재시간)")
@@ -247,7 +244,6 @@ def render_child_section(child_name, container):
             if st.button(f"🍼 수유 [{auto_slot}] 기록", key=f"now_feed_{child_name}", type="primary", use_container_width=True):
                 df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str), auto_slot] = now_feed_val
                 save_feeding_data(df_feeding)
-                st.toast(f"🍼 {child_name} [{auto_slot}] {now_feed_val}ml 구글 시트 저장 완료!", icon="🍼")
                 st.rerun()
 
         with btn_c2:
@@ -256,7 +252,6 @@ def render_child_section(child_name, container):
                 new_poop = {"날짜": today_str, "아동": child_name, "시간": now_str, "종류": "대변"}
                 df_poop = pd.concat([df_poop, pd.DataFrame([new_poop])], ignore_index=True)
                 save_poop_data(df_poop)
-                st.toast(f"💩 {child_name} 대변 ({now_str}) 구글 시트 저장!", icon="💩")
                 st.rerun()
 
         with btn_c3:
@@ -265,7 +260,6 @@ def render_child_section(child_name, container):
                 new_poop = {"날짜": today_str, "아동": child_name, "시간": now_str, "종류": "소변"}
                 df_poop = pd.concat([df_poop, pd.DataFrame([new_poop])], ignore_index=True)
                 save_poop_data(df_poop)
-                st.toast(f"🟡 {child_name} 소변 ({now_str}) 구글 시트 저장!", icon="🟡")
                 st.rerun()
 
         with btn_c4:
@@ -276,7 +270,6 @@ def render_child_section(child_name, container):
                     new_sleep = {"날짜": today_str, "아동": child_name, "시작시간": now_str, "종류": "수면중", "수면분": 0}
                     df_sleep = pd.concat([df_sleep, pd.DataFrame([new_sleep])], ignore_index=True)
                     save_sleep_data(df_sleep)
-                    st.toast(f"😴 {child_name} 수면 시작 ({now_str}) 저장", icon="😴")
                     st.rerun()
             else:
                 if st.button(f"⏰ 깨어났음", key=f"sleep_end_{child_name}", type="primary", use_container_width=True):
@@ -289,7 +282,6 @@ def render_child_section(child_name, container):
                     df_sleep.loc[target_idx, "종류"] = now_dt.strftime("%H:%M")
                     df_sleep.loc[target_idx, "수면분"] = max(duration_min, 1)
                     save_sleep_data(df_sleep)
-                    st.toast(f"⏰ {child_name} 깨어남! 총 {duration_min}분 수면 저장", icon="⏰")
                     st.rerun()
 
         st.divider()
