@@ -4,6 +4,13 @@ import plotly.express as px
 from datetime import datetime, date
 import os
 from PIL import Image
+import pytz
+
+# 한국 시간대(KST) 정의
+KST = pytz.timezone('Asia/Seoul')
+
+def get_now_kst():
+    return datetime.now(KST)
 
 st.set_page_config(page_title="쌍둥이 통합 수유 & 성장 대시보드", layout="wide")
 
@@ -24,7 +31,7 @@ SCHEDULE_OPTIONS = {
 def init_data():
     if not os.path.exists(FEEDING_FILE):
         records = []
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = get_now_kst().strftime("%Y-%m-%d")
         all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
         for child in ["원빈", "현빈"]:
             row = {"날짜": today_str, "아동": child, "몸무게": 3.5 if child == "원빈" else 4.1}
@@ -64,7 +71,7 @@ def save_sleep_data(df):
 
 st.title("👶 쌍둥이 이른둥이 맞춤 수유 & 성장 대시보드")
 
-today_dt = date.today()
+today_dt = get_now_kst().date()
 chronological_days = (today_dt - BIRTH_DATE).days
 corrected_days = (today_dt - DUE_DATE).days
 
@@ -88,11 +95,11 @@ st.sidebar.divider()
 st.sidebar.header("💾 데이터 백업")
 col_b1, col_b2, col_b3 = st.sidebar.columns(3)
 with col_b1:
-    st.download_button("📥 수유", df_feeding.to_csv(index=False, encoding="utf-8-sig"), f"feeding_{date.today()}.csv", "text/csv")
+    st.download_button("📥 수유", df_feeding.to_csv(index=False, encoding="utf-8-sig"), f"feeding_{today_dt}.csv", "text/csv")
 with col_b2:
-    st.download_button("📥 배변", df_poop.to_csv(index=False, encoding="utf-8-sig"), f"poop_{date.today()}.csv", "text/csv")
+    st.download_button("📥 배변", df_poop.to_csv(index=False, encoding="utf-8-sig"), f"poop_{today_dt}.csv", "text/csv")
 with col_b3:
-    st.download_button("📥 수면", df_sleep.to_csv(index=False, encoding="utf-8-sig"), f"sleep_{date.today()}.csv", "text/csv")
+    st.download_button("📥 수면", df_sleep.to_csv(index=False, encoding="utf-8-sig"), f"sleep_{today_dt}.csv", "text/csv")
 
 col_left, col_right = st.columns(2)
 
@@ -123,7 +130,7 @@ def render_child_section(child_name, container):
                     st.toast("프로필 사진 저장 완료!", icon="🖼️")
                     st.rerun()
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = get_now_kst().strftime("%Y-%m-%d")
         child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
         
         # 오늘 날짜 행 생성
@@ -226,35 +233,51 @@ def render_child_section(child_name, container):
         st.subheader("💩 배변 & 😴 수면 기록")
         p_btn1, p_btn2 = st.columns(2)
         with p_btn1:
-            if st.button(f"💩 대변 기록", key=f"quick_poop_{child_name}", use_container_width=True):
-                now_str = datetime.now().strftime("%H:%M")
+            if st.button(f"💩 대변 기록 (현재시간)", key=f"quick_poop_{child_name}", use_container_width=True):
+                now_str = get_now_kst().strftime("%H:%M")
                 new_poop = {"날짜": today_str, "아동": child_name, "시간": now_str, "종류": "대변"}
                 df_poop = pd.concat([df_poop, pd.DataFrame([new_poop])], ignore_index=True)
                 save_poop_data(df_poop)
                 st.toast(f"💩 {child_name} 대변 ({now_str}) 기록 완료!", icon="💩")
                 st.rerun()
         with p_btn2:
-            if st.button(f"🟡 소변 기록", key=f"quick_pee_{child_name}", use_container_width=True):
-                now_str = datetime.now().strftime("%H:%M")
+            if st.button(f"🟡 소변 기록 (현재시간)", key=f"quick_pee_{child_name}", use_container_width=True):
+                now_str = get_now_kst().strftime("%H:%M")
                 new_poop = {"날짜": today_str, "아동": child_name, "시간": now_str, "종류": "소변"}
                 df_poop = pd.concat([df_poop, pd.DataFrame([new_poop])], ignore_index=True)
                 save_poop_data(df_poop)
                 st.toast(f"🟡 {child_name} 소변 ({now_str}) 기록 완료!", icon="🟡")
                 st.rerun()
 
+        # 과거/수동 배변 시간 지정 입력 폼
+        with st.expander("🕒 배변 시간 지정 입력 (지나간 시간)", expanded=False):
+            with st.form(key=f"custom_poop_{child_name}"):
+                c_p1, c_p2 = st.columns(2)
+                with c_p1:
+                    custom_p_type = st.radio("종류", ["소변", "대변"], horizontal=True, key=f"p_type_{child_name}")
+                with c_p2:
+                    custom_p_time = st.time_input("발생 시각", get_now_kst().time(), key=f"p_time_{child_name}")
+                if st.form_submit_button("➕ 지정 시간 배변 기록"):
+                    time_str = custom_p_time.strftime("%H:%M")
+                    new_poop = {"날짜": today_str, "아동": child_name, "시간": time_str, "종류": custom_p_type}
+                    df_poop = pd.concat([df_poop, pd.DataFrame([new_poop])], ignore_index=True)
+                    save_poop_data(df_poop)
+                    st.toast(f"{custom_p_type} ({time_str}) 기록 완료!", icon="✅")
+                    st.rerun()
+
         # 수면 기록 폼
         with st.expander("😴 수면 시간 세부 기록", expanded=False):
             with st.form(key=f"sleep_form_{child_name}"):
                 s_col1, s_col2 = st.columns(2)
                 with s_col1:
-                    sleep_start = st.time_input("수면 시작 시간", datetime.now().time())
+                    sleep_start = st.time_input("수면 시작 시간", get_now_kst().time(), key=f"s_start_{child_name}")
                 with s_col2:
-                    sleep_end = st.time_input("수면 종료 시간", datetime.now().time())
+                    sleep_end = st.time_input("수면 종료 시간", get_now_kst().time(), key=f"s_end_{child_name}")
                 
                 if st.form_submit_button("💾 수면 기록 저장"):
-                    t_start = datetime.combine(date.today(), sleep_start)
-                    t_end = datetime.combine(date.today(), sleep_end)
-                    if t_end < t_start: # 자정을 넘긴 수면
+                    t_start = datetime.combine(get_now_kst().date(), sleep_start)
+                    t_end = datetime.combine(get_now_kst().date(), sleep_end)
+                    if t_end < t_start:
                         t_end = t_end.replace(day=t_end.day + 1)
                     duration_min = int((t_end - t_start).total_seconds() / 60)
                     
@@ -269,11 +292,8 @@ def render_child_section(child_name, container):
                     st.toast(f"😴 {child_name} 수면 {duration_min}분 기록 완료!", icon="😴")
                     st.rerun()
 
-        # --- 배변 및 수면 내역 삭제/수정 관리 메뉴 (신규 추가) ---
+        # 배변 & 수면 내역 삭제/수정 관리
         with st.expander("🛠️ 배변 & 수면 기록 관리 (삭제/수정)", expanded=False):
-            st.caption("잘못 입력된 배변 또는 수면 내역을 삭제할 수 있습니다.")
-            
-            # 배변 삭제
             if len(today_poop_df) > 0:
                 st.write("📌 **오늘 배변 내역**")
                 for p_idx, p_row in today_poop_df.iterrows():
@@ -287,7 +307,6 @@ def render_child_section(child_name, container):
                             st.toast("배변 내역이 삭제되었습니다.")
                             st.rerun()
             
-            # 수면 삭제
             if len(today_sleep_df) > 0:
                 st.write("📌 **오늘 수면 내역**")
                 for s_idx, s_row in today_sleep_df.iterrows():
@@ -349,7 +368,7 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 그래프 (체중 추정치 선형 보간 반영) ---
+        # --- 그래프 ---
         comp_list = []
         for c in current_time_cols:
             val = int(today_row[c]) if c in today_row and pd.notna(today_row[c]) else 0
