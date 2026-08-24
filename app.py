@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime, date
+from datetime import datetime, date, timedelta, timezone
 import os
 from PIL import Image
-import pytz
 
-# 한국 시간대(KST) 정의
-KST = pytz.timezone('Asia/Seoul')
+# 파이썬 기본 기능으로 KST(한국 표준시: UTC+9) 정의
+KST = timezone(timedelta(hours=9))
 
 def get_now_kst():
     return datetime.now(KST)
