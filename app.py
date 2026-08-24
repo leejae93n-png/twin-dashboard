@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
+import time
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta, timezone
@@ -26,18 +27,23 @@ SCHEDULE_OPTIONS = {
     "일 5회 (4.5시간 텀)": ["06:00", "10:30", "15:00", "19:30", "23:00"]
 }
 
-# --- Google Apps Script 연동 함수 ---
+# --- Google Apps Script 연동 함수 (캐시 방지 적용) ---
 GAS_URL = st.secrets.get("GAS_URL", "")
 
 def load_data_from_gas(sheet_name):
     if not GAS_URL:
         return pd.DataFrame()
     try:
-        res = requests.get(f"{GAS_URL}?sheet={sheet_name}", timeout=8)
+        # 캐시 방지를 위해 현재 타임스탬프 전송
+        timestamp = int(time.time())
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=8)
         data = res.json()
         if not data or len(data) <= 1:
             return pd.DataFrame()
-        return pd.DataFrame(data[1:], columns=data[0])
+        df = pd.DataFrame(data[1:], columns=data[0])
+        # 공백 컬럼 제거 및 문자열 정형화
+        df.columns = [str(c).strip() for c in df.columns]
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -143,9 +149,9 @@ def render_child_section(child_name, container):
                     st.rerun()
 
         today_str = get_now_kst().strftime("%Y-%m-%d")
-        child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True) if not df_feeding.empty else pd.DataFrame()
+        child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True) if not df_feeding.empty and "아동" in df_feeding.columns else pd.DataFrame()
         
-        if df_feeding.empty or today_str not in child_df["날짜"].values:
+        if df_feeding.empty or child_df.empty or today_str not in child_df["날짜"].values:
             default_w = 3.5 if child_name == "원빈" else 4.1
             last_weight = child_df["몸무게"].dropna().iloc[-1] if not child_df.empty and "몸무게" in child_df and len(child_df["몸무게"].dropna()) > 0 else default_w
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": last_weight}
@@ -155,6 +161,7 @@ def render_child_section(child_name, container):
             save_feeding_data(df_feeding)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
+        # 수치형 유연 처리
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce")
         child_df["몸무게_원본"] = child_df["몸무게"]
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill()
@@ -181,23 +188,25 @@ def render_child_section(child_name, container):
 
         st.caption(predict_msg)
 
-        today_poop_df = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == today_str)] if not df_poop.empty else pd.DataFrame()
+        today_poop_df = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == today_str)] if not df_poop.empty and "아동" in df_poop.columns else pd.DataFrame()
         poop_cnt = len(today_poop_df[today_poop_df["종류"] == "대변"]) if not today_poop_df.empty else 0
         pee_cnt = len(today_poop_df[today_poop_df["종류"] == "소변"]) if not today_poop_df.empty else 0
 
-        today_sleep_df = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str)] if not df_sleep.empty else pd.DataFrame()
+        today_sleep_df = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str)] if not df_sleep.empty and "아동" in df_sleep.columns else pd.DataFrame()
         total_sleep_min = pd.to_numeric(today_sleep_df["수면분"], errors="coerce").fillna(0).sum() if not today_sleep_df.empty else 0
 
         target_total = min(int(weight * 180), 1000)
-        actual_total = sum([int(float(today_row[c])) for c in current_time_cols if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit()])
+        actual_total = sum([int(pd.to_numeric(today_row[c], errors='coerce')) for c in current_time_cols if c in today_row and pd.notna(today_row[c])])
 
         slot_sums = {c: 0 for c in current_time_cols}
         slot_counts = {c: 0 for c in current_time_cols}
         for _, r in child_df.iterrows():
             for c in current_time_cols:
-                if c in r and pd.notna(r[c]) and str(r[c]).replace('.','',1).isdigit() and int(float(r[c])) > 0:
-                    slot_sums[c] += int(float(r[c]))
-                    slot_counts[c] += 1
+                if c in r and pd.notna(r[c]):
+                    v = pd.to_numeric(r[c], errors='coerce')
+                    if pd.notna(v) and v > 0:
+                        slot_sums[c] += int(v)
+                        slot_counts[c] += 1
         
         slot_avgs = {c: (slot_sums[c] / slot_counts[c] if slot_counts[c] > 0 else (target_total / len(current_time_cols))) for c in current_time_cols}
         total_avg_sum = sum(slot_avgs.values()) if sum(slot_avgs.values()) > 0 else 1
@@ -210,9 +219,11 @@ def render_child_section(child_name, container):
 
         last_feed_time = None
         for c in reversed(current_time_cols):
-            if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() and int(float(today_row[c])) > 0:
-                last_feed_time = c
-                break
+            if c in today_row and pd.notna(today_row[c]):
+                v = pd.to_numeric(today_row[c], errors='coerce')
+                if pd.notna(v) and v > 0:
+                    last_feed_time = c
+                    break
         
         next_feed_str = "시간 정보 없음"
         if last_feed_time:
@@ -244,12 +255,12 @@ def render_child_section(child_name, container):
         # --- 2. 통합 실시간 1초 원클릭 기록 (현재시간) ---
         st.subheader("⚡ 실시간 1초 원클릭 기록 (현재시간)")
         
-        # 수유량 설정 및 원클릭 버튼을 가로로 정렬
         feed_col1, feed_col2, btn_c2, btn_c3, btn_c4 = st.columns([1.2, 1.8, 1, 1, 1])
         
         with feed_col1:
             auto_slot = current_time_cols[closest_slot_idx]
-            cur_val = int(float(today_row[auto_slot])) if auto_slot in today_row and pd.notna(today_row[auto_slot]) and str(today_row[auto_slot]).replace('.','',1).isdigit() else 0
+            cur_val_raw = pd.to_numeric(today_row[auto_slot], errors='coerce') if auto_slot in today_row else 0
+            cur_val = int(cur_val_raw) if pd.notna(cur_val_raw) else 0
             default_feed = cur_val if cur_val > 0 else slot_recommended.get(auto_slot, 100)
             now_feed_val = st.number_input("수유량 (ml)", value=default_feed, step=5, key=f"now_val_{child_name}", label_visibility="collapsed")
             
@@ -279,7 +290,7 @@ def render_child_section(child_name, container):
                 st.rerun()
 
         with btn_c4:
-            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"].astype(str) == "0")] if not df_sleep.empty else pd.DataFrame()
+            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"].astype(str) == "0")] if not df_sleep.empty and "아동" in df_sleep.columns else pd.DataFrame()
             if len(sleeping_row) == 0:
                 if st.button(f"😴 잠들었음", key=f"sleep_start_{child_name}", use_container_width=True):
                     now_str = get_now_kst().strftime("%H:%M")
@@ -305,7 +316,8 @@ def render_child_section(child_name, container):
         # 수유 배지 타임라인
         feed_badges = []
         for c in current_time_cols:
-            v = int(float(today_row[c])) if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() else 0
+            v_raw = pd.to_numeric(today_row[c], errors='coerce') if c in today_row else 0
+            v = int(v_raw) if pd.notna(v_raw) else 0
             if v > 0:
                 feed_badges.append(
                     f'<span style="display:inline-block; background-color:#1e3a5f; border:1px solid #3b82f6; '
@@ -352,14 +364,15 @@ def render_child_section(child_name, container):
             
             st.markdown(f"#### 🔍 **[{sel_date_str}] {child_name} 기록 상태**")
             
-            f_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str)] if not df_feeding.empty else pd.DataFrame()
-            p_df_sel = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == sel_date_str)] if not df_poop.empty else pd.DataFrame()
-            s_df_sel = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == sel_date_str)] if not df_sleep.empty else pd.DataFrame()
+            f_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str)] if not df_feeding.empty and "아동" in df_feeding.columns else pd.DataFrame()
+            p_df_sel = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == sel_date_str)] if not df_poop.empty and "아동" in df_poop.columns else pd.DataFrame()
+            s_df_sel = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == sel_date_str)] if not df_sleep.empty and "아동" in df_sleep.columns else pd.DataFrame()
 
             missing_times = []
             row_dict = f_row.iloc[0] if len(f_row) > 0 else {}
             for t_col in current_time_cols:
-                val = int(float(row_dict[t_col])) if t_col in row_dict and pd.notna(row_dict[t_col]) and str(row_dict[t_col]).replace('.','',1).isdigit() else 0
+                val_raw = pd.to_numeric(row_dict[t_col], errors='coerce') if t_col in row_dict else 0
+                val = int(val_raw) if pd.notna(val_raw) else 0
                 if val == 0: missing_times.append(t_col)
 
             if missing_times:
@@ -402,7 +415,8 @@ def render_child_section(child_name, container):
             st.divider()
 
             st.write(f"✍️ **[{sel_date_str}] 데이터 수정 & 추가**")
-            cur_w = float(row_dict["몸무게"]) if "몸무게" in row_dict and pd.notna(row_dict["몸무게"]) and str(row_dict["몸무게"]).replace('.','',1).isdigit() else weight
+            w_raw = pd.to_numeric(row_dict.get("몸무게"), errors='coerce') if "몸무게" in row_dict else weight
+            cur_w = float(w_raw) if pd.notna(w_raw) else weight
             
             with st.form(key=f"m_feed_form_{child_name}_{sel_date_str}"):
                 st.write("🍼 **수유량 및 체중 일괄 수정**")
@@ -410,7 +424,8 @@ def render_child_section(child_name, container):
                 f_in = {}
                 f_cols = st.columns(4)
                 for i, c_name in enumerate(current_time_cols):
-                    v = int(float(row_dict[c_name])) if c_name in row_dict and pd.notna(row_dict[c_name]) and str(row_dict[c_name]).replace('.','',1).isdigit() else 0
+                    v_raw = pd.to_numeric(row_dict.get(c_name), errors='coerce') if c_name in row_dict else 0
+                    v = int(v_raw) if pd.notna(v_raw) else 0
                     with f_cols[i % 4]:
                         f_in[c_name] = st.number_input(f"{c_name}", value=v, step=5, key=f"mf_{child_name}_{sel_date_str}_{c_name}")
                 
@@ -468,11 +483,13 @@ def render_child_section(child_name, container):
             feed_count = 0
             details = []
             for tc in time_cols_in_df:
-                if pd.notna(r[tc]) and str(r[tc]).replace('.','',1).isdigit() and int(float(r[tc])) > 0:
-                    v = int(float(r[tc]))
-                    day_total += v
-                    feed_count += 1
-                    details.append(f"{tc}:{v}ml")
+                if tc in r and pd.notna(r[tc]):
+                    v_raw = pd.to_numeric(r[tc], errors='coerce')
+                    if pd.notna(v_raw) and v_raw > 0:
+                        v = int(v_raw)
+                        day_total += v
+                        feed_count += 1
+                        details.append(f"{tc}:{v}ml")
             
             w_val = float(r["몸무게_보간"])
             target_v = min(int(w_val * 180), 1000)
@@ -509,7 +526,7 @@ def render_child_section(child_name, container):
 
         min_date = trend_df["날짜"].max() if not trend_df.empty else today_str
         try: default_start = (datetime.strptime(min_date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
-        except: default_start = trend_df["날짜"].min()
+        except: default_start = trend_df["날짜"].min() if not trend_df.empty else today_str
 
         fig_feed_trend.update_layout(
             title=dict(text=f"<b>{child_name} 일자별 총 수유량 추이</b>", font=dict(size=16), y=0.98, x=0.01, xanchor="left"),
