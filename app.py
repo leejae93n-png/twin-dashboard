@@ -27,22 +27,30 @@ SCHEDULE_OPTIONS = {
     "일 5회 (4.5시간 텀)": ["06:00", "10:30", "15:00", "19:30", "23:00"]
 }
 
-# --- Google Apps Script 연동 함수 (캐시 방지 적용) ---
+# --- Google Apps Script 연동 함수 ---
 GAS_URL = st.secrets.get("GAS_URL", "")
+
+def format_time_col(col_name):
+    # '1:00' -> '01:00' 형태로 정규화
+    col_str = str(col_name).strip()
+    if ":" in col_str:
+        parts = col_str.split(":")
+        if len(parts) == 2:
+            return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+    return col_str
 
 def load_data_from_gas(sheet_name):
     if not GAS_URL:
         return pd.DataFrame()
     try:
-        # 캐시 방지를 위해 현재 타임스탬프 전송
         timestamp = int(time.time())
         res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=8)
         data = res.json()
         if not data or len(data) <= 1:
             return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
-        # 공백 컬럼 제거 및 문자열 정형화
-        df.columns = [str(c).strip() for c in df.columns]
+        # 헤더 정규화 (1:00 -> 01:00)
+        df.columns = [format_time_col(c) for c in df.columns]
         return df
     except Exception:
         return pd.DataFrame()
@@ -161,7 +169,6 @@ def render_child_section(child_name, container):
             save_feeding_data(df_feeding)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
-        # 수치형 유연 처리
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce")
         child_df["몸무게_원본"] = child_df["몸무게"]
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill()
@@ -467,7 +474,7 @@ def render_child_section(child_name, container):
                     if te < ts: te = te.replace(day=te.day + 1)
                     dur = int((te - ts).total_seconds() / 60)
                     new_s = {"날짜": sel_date_str, "아동": child_name, "시작시간": ss.strftime("%H:%M"), "종류": se.strftime("%H:%M"), "수면분": dur}
-                    df_sleep = pd.concat([df_sleep, pd.DataFrame([new_s])], ignore_index=True)
+                    df_sleep = pd.concat([df_sleep, pd.DataFrame([new_sleep])], ignore_index=True)
                     save_sleep_data(df_sleep)
                     st.toast(f"[{sel_date_str}] 구글 시트에 수면 {dur}분 기록 추가!")
                     st.rerun()
