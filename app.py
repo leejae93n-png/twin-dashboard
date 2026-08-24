@@ -34,6 +34,13 @@ def format_time_col(col_name):
             return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
     return col_str
 
+def clean_date_str(val):
+    try:
+        dt = pd.to_datetime(val)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return str(val).strip()
+
 def load_data_from_gas(sheet_name):
     if not GAS_URL: return pd.DataFrame()
     try:
@@ -43,6 +50,8 @@ def load_data_from_gas(sheet_name):
         if not data or len(data) <= 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
         df.columns = [format_time_col(c) for c in df.columns]
+        if "날짜" in df.columns:
+            df["날짜"] = df["날짜"].apply(clean_date_str)
         return df
     except Exception:
         return pd.DataFrame()
@@ -141,7 +150,14 @@ def render_child_section(child_name, container):
             st.markdown(f"<h2 style='margin-bottom:0px; padding-top:10px;'>이{child_name}</h2>", unsafe_allow_html=True)
 
         today_str = get_now_kst().strftime("%Y-%m-%d")
-        child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True) if not df_feeding.empty and "아동" in df_feeding.columns else pd.DataFrame()
+        
+        # 아동 데이터 필터링 및 날짜 오름차순 정렬
+        if not df_feeding.empty and "아동" in df_feeding.columns:
+            child_df = df_feeding[df_feeding["아동"] == child_name].copy()
+            child_df["날짜"] = child_df["날짜"].apply(clean_date_str)
+            child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
+        else:
+            child_df = pd.DataFrame()
         
         if df_feeding.empty or child_df.empty or today_str not in child_df["날짜"].values:
             default_w = 3.5 if child_name == "원빈" else 4.1
@@ -150,14 +166,18 @@ def render_child_section(child_name, container):
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
             df_feeding = pd.concat([df_feeding, pd.DataFrame([new_row])], ignore_index=True)
             save_feeding_data(df_feeding)
-            child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
+            child_df = df_feeding[df_feeding["아동"] == child_name].copy()
+            child_df["날짜"] = child_df["날짜"].apply(clean_date_str)
+            child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
 
-        # --- 몸무게 누락 강제 채움 및 보간 ---
+        # --- 몸무게 보간 ---
         default_base_weight = 3.5 if child_name == "원빈" else 4.1
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce").fillna(default_base_weight)
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill().fillna(default_base_weight)
 
-        today_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str)].iloc[0]
+        today_row_matches = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str)]
+        today_row = today_row_matches.iloc[0] if len(today_row_matches) > 0 else child_df.iloc[-1]
+        
         weight_raw = pd.to_numeric(today_row.get("몸무게"), errors='coerce')
         weight = float(weight_raw) if pd.notna(weight_raw) and weight_raw > 0 else default_base_weight
 
@@ -192,7 +212,6 @@ def render_child_section(child_name, container):
 
         closest_slot_idx = get_closest_slot(current_time_cols, get_now_kst().time())
         current_target_slot = current_time_cols[closest_slot_idx]
-        rec_val_for_slot = slot_recommended[current_target_slot]
 
         # --- 2. 실시간 1초 원클릭 기록 ---
         st.subheader("⚡ 실시간 1초 원클릭 기록 (현재시간)")
@@ -280,7 +299,7 @@ def render_child_section(child_name, container):
             avg_single_feed = round(day_total / feed_count) if feed_count > 0 else 0
             
             trend_records.append({
-                "날짜": r["날짜"],
+                "날짜": str(r["날짜"]),
                 "총수유량": day_total,
                 "목표수유량": target_v,
                 "평균1회수유량": avg_single_feed,
@@ -307,15 +326,12 @@ def render_child_section(child_name, container):
             hovertemplate="<b>목표 기준</b>: %{y} ml"
         ))
 
-        min_date = trend_df["날짜"].max() if not trend_df.empty else today_str
-        default_start = trend_df["날짜"].min() if not trend_df.empty else today_str
-
         fig_feed_trend.update_layout(
             title=dict(text=f"<b>{child_name} 일자별 총 수유량 추이</b>", font=dict(size=16), y=0.98, x=0.01, xanchor="left"),
             height=360, margin=dict(l=10, r=10, t=90, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(
-                range=[default_start, min_date],
+                type="category",  # 날짜 축 카테고리 고정
                 rangeselector=dict(
                     buttons=list([
                         dict(count=1, label="1개월", step="month", stepmode="backward"),
@@ -345,7 +361,7 @@ def render_child_section(child_name, container):
             title=dict(y=0.98, x=0.01, xanchor="left"),
             margin=dict(l=10, r=10, t=80, b=10),
             xaxis=dict(
-                range=[default_start, min_date],
+                type="category",  # 날짜 축 카테고리 고정
                 rangeselector=dict(
                     buttons=list([
                         dict(count=1, label="1개월", step="month", stepmode="backward"),
