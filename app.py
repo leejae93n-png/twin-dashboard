@@ -34,12 +34,21 @@ def format_time_col(col_name):
             return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
     return col_str
 
-def clean_date_str(val):
+def parse_date_to_str(val):
+    """구글 시트 날짜가 문자열, ISO 8601, Timestamp 등 어떤 형태여도 YYYY-MM-DD로 강제 정형화"""
+    if pd.isna(val) or str(val).strip() == "":
+        return ""
+    val_str = str(val).strip()
+    # T 및 시분초 잘라내기
+    if "T" in val_str:
+        val_str = val_str.split("T")[0]
+    if " " in val_str:
+        val_str = val_str.split(" ")[0]
     try:
-        dt = pd.to_datetime(val)
+        dt = pd.to_datetime(val_str)
         return dt.strftime("%Y-%m-%d")
     except Exception:
-        return str(val).strip()
+        return val_str
 
 def load_data_from_gas(sheet_name):
     if not GAS_URL: return pd.DataFrame()
@@ -49,9 +58,19 @@ def load_data_from_gas(sheet_name):
         data = res.json()
         if not data or len(data) <= 1: return pd.DataFrame()
         df = pd.DataFrame(data[1:], columns=data[0])
+        
+        # 1. 헤더 정규화 (1:00 -> 01:00)
         df.columns = [format_time_col(c) for c in df.columns]
+        
+        # 2. 날짜 데이터 강제 정형화 (핵심)
         if "날짜" in df.columns:
-            df["날짜"] = df["날짜"].apply(clean_date_str)
+            df["날짜"] = df["날짜"].apply(parse_date_to_str)
+            df = df[df["날짜"] != ""] # 빈 날짜 제거
+            
+        # 3. 아동명 공백 제거
+        if "아동" in df.columns:
+            df["아동"] = df["아동"].astype(str).str.strip()
+            
         return df
     except Exception:
         return pd.DataFrame()
@@ -151,14 +170,14 @@ def render_child_section(child_name, container):
 
         today_str = get_now_kst().strftime("%Y-%m-%d")
         
-        # 아동 데이터 필터링 및 날짜 오름차순 정렬
-        if not df_feeding.empty and "아동" in df_feeding.columns:
+        # 아동별 데이터 필터링 및 오름차순 정렬
+        if not df_feeding.empty and "아동" in df_feeding.columns and "날짜" in df_feeding.columns:
             child_df = df_feeding[df_feeding["아동"] == child_name].copy()
-            child_df["날짜"] = child_df["날짜"].apply(clean_date_str)
             child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
         else:
             child_df = pd.DataFrame()
         
+        # 오늘 날짜 행 없을 경우 자동 추가
         if df_feeding.empty or child_df.empty or today_str not in child_df["날짜"].values:
             default_w = 3.5 if child_name == "원빈" else 4.1
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": default_w}
@@ -167,10 +186,9 @@ def render_child_section(child_name, container):
             df_feeding = pd.concat([df_feeding, pd.DataFrame([new_row])], ignore_index=True)
             save_feeding_data(df_feeding)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy()
-            child_df["날짜"] = child_df["날짜"].apply(clean_date_str)
             child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
 
-        # --- 몸무게 보간 ---
+        # 몸무게 처리
         default_base_weight = 3.5 if child_name == "원빈" else 4.1
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce").fillna(default_base_weight)
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill().fillna(default_base_weight)
@@ -331,7 +349,7 @@ def render_child_section(child_name, container):
             height=360, margin=dict(l=10, r=10, t=90, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(
-                type="category",  # 날짜 축 카테고리 고정
+                type="category",
                 rangeselector=dict(
                     buttons=list([
                         dict(count=1, label="1개월", step="month", stepmode="backward"),
@@ -361,7 +379,7 @@ def render_child_section(child_name, container):
             title=dict(y=0.98, x=0.01, xanchor="left"),
             margin=dict(l=10, r=10, t=80, b=10),
             xaxis=dict(
-                type="category",  # 날짜 축 카테고리 고정
+                type="category",
                 rangeselector=dict(
                     buttons=list([
                         dict(count=1, label="1개월", step="month", stepmode="backward"),
