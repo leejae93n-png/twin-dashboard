@@ -42,18 +42,21 @@ def parse_clean_date(val):
     except:
         return v
 
+# 타임아웃 25초 확장 및 데이터 캐싱 적용 (ttl=5초)
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_gas_data(sheet_name, gas_url):
+    timestamp = int(time.time())
+    res = requests.get(f"{gas_url}?sheet={sheet_name}&_t={timestamp}", timeout=25, allow_redirects=True)
+    if res.status_code != 200:
+        return None
+    return res.json()
+
 def load_data_from_gas(sheet_name):
     if not GAS_URL: 
         st.error("⚠️ Secrets 설정에서 GAS_URL을 등록해 주세요.")
         return pd.DataFrame()
     try:
-        timestamp = int(time.time())
-        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=10, allow_redirects=True)
-        if res.status_code != 200:
-            st.error(f"❌ 구글 시트 연결 실패 [{sheet_name}] 응답코드: {res.status_code}")
-            return pd.DataFrame()
-            
-        data = res.json()
+        data = fetch_gas_data(sheet_name, GAS_URL)
         if not data or len(data) <= 1: return pd.DataFrame()
         
         df = pd.DataFrame(data[1:], columns=data[0])
@@ -79,9 +82,10 @@ def save_data_to_gas(sheet_name, df):
         payload = {"sheet": sheet_name, "rows": rows}
         
         headers = {'Content-Type': 'application/json'}
-        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=12, allow_redirects=True)
+        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=25, allow_redirects=True)
         
         if res.status_code == 200:
+            st.cache_data.clear() # 저장 후 캐시 초기화
             st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 동기화되었습니다!", icon="💾")
         else:
             st.warning(f"⚠️ 저장 통신 응답 코드: {res.status_code}")
@@ -286,7 +290,7 @@ def render_child_section(child_name, container):
                     save_sleep_data(df_sleep)
                     st.rerun()
 
-        # --- 3. 📅 날짜별 통합 기록 조회 및 수정 센터 (복구 완료) ---
+        # --- 3. 📅 날짜별 통합 기록 조회 및 수정 센터 ---
         st.markdown("---")
         with st.expander("📅 날짜별 통합 기록 조회 및 수정 센터 (클릭하여 열기)", expanded=False):
             sel_date = st.date_input("조회 및 수정할 날짜 선택", get_now_kst().date(), key=f"m_date_{child_name}")
