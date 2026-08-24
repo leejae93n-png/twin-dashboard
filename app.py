@@ -174,7 +174,7 @@ def render_child_section(child_name, container):
         target_total = min(int(weight * 180), 1000)
         actual_total = sum([int(today_row[c]) for c in current_time_cols if c in today_row and pd.notna(today_row[c])])
 
-        # --- 과거 회당 수유량 비중 분석 알고리즘 기반 추천수유량 계산 ---
+        # 과거 비중 분석 기반 추천수유량
         slot_sums = {c: 0 for c in current_time_cols}
         slot_counts = {c: 0 for c in current_time_cols}
         for _, r in child_df.iterrows():
@@ -187,13 +187,13 @@ def render_child_section(child_name, container):
         total_avg_sum = sum(slot_avgs.values()) if sum(slot_avgs.values()) > 0 else 1
         slot_recommended = {c: round((slot_avgs[c] / total_avg_sum) * target_total / 5) * 5 for c in current_time_cols}
 
-        # --- 현황 지표 ---
+        # 현황 지표
         k1, k2, k3 = st.columns([1.1, 1.3, 1.2])
         with k1: st.metric("체중 / 기준", f"{weight:.2f} kg", "1kg당 180ml")
         with k2: st.metric("현재 수유 달성", f"{actual_total} / {target_total} ml", f"{actual_total - target_total} ml")
         with k3: st.metric("오늘 배변/수면", f"💩{poop_cnt} 🟡{pee_cnt}", f"😴 {total_sleep_min//60}시간 {total_sleep_min%60}분")
 
-        # --- 동적 스마트 육아 가이드 & 시간대별 맞춤 추천 수유량 ---
+        # 동적 육아 가이드
         last_feed_time = None
         for c in reversed(current_time_cols):
             if c in today_row and pd.notna(today_row[c]) and int(today_row[c]) > 0:
@@ -259,7 +259,7 @@ def render_child_section(child_name, container):
                 )
         if feed_badges: st.markdown("".join(feed_badges), unsafe_allow_html=True)
 
-        # --- 3. 실시간 1초 원클릭 기록 (수유/배변/수면 통합) ---
+        # --- 3. 실시간 1초 원클릭 기록 ---
         st.markdown("---")
         st.subheader("⚡ 실시간 1초 원클릭 기록 (현재시간)")
         
@@ -312,7 +312,7 @@ def render_child_section(child_name, container):
                     st.toast(f"⏰ {child_name} 깨어남! 총 {duration_min}분 수면", icon="⏰")
                     st.rerun()
 
-        # 오늘 배변/수면 타임라인
+        # 오늘 타임라인
         st.write("🕒 **오늘 배변 / 수면 타임라인**")
         combined_badges = []
         if len(today_poop_df) > 0:
@@ -343,7 +343,7 @@ def render_child_section(child_name, container):
         if combined_badges: st.markdown("".join(combined_badges), unsafe_allow_html=True)
         else: st.caption("오늘 기록된 배변 및 수면 내역이 없습니다.")
 
-        # --- 4. 📅 날짜별 통합 조회 & 과거/오늘 기록 수정 센터 ---
+        # --- 4. 📅 날짜별 통합 조회 & 과거/오늘 기록 수정 센터 (위젯 캐싱 수정 완료) ---
         st.markdown("---")
         with st.expander("📅 날짜별 통합 기록 조회 및 수정 센터 (클릭하여 열기)", expanded=False):
             sel_date = st.date_input("조회 및 수정할 날짜 선택", get_now_kst().date(), key=f"m_date_{child_name}")
@@ -402,14 +402,18 @@ def render_child_section(child_name, container):
 
             st.write(f"✍️ **[{sel_date_str}] 데이터 수정 & 추가**")
             cur_w = float(row_dict["몸무게"]) if "몸무게" in row_dict and pd.notna(row_dict["몸무게"]) else weight
-            with st.form(key=f"m_feed_form_{child_name}"):
+            
+            # Key에 sel_date_str을 결합하여 날짜가 바뀌면 입력을 완전히 초기화
+            with st.form(key=f"m_feed_form_{child_name}_{sel_date_str}"):
                 st.write("🍼 **수유량 및 체중 일괄 수정**")
-                w_in = st.number_input("해당 날짜 체중 (kg)", value=cur_w, step=0.05, format="%.2f")
+                w_in = st.number_input("해당 날짜 체중 (kg)", value=cur_w, step=0.05, format="%.2f", key=f"mw_{child_name}_{sel_date_str}")
                 f_in = {}
                 f_cols = st.columns(4)
                 for i, c_name in enumerate(current_time_cols):
                     v = int(row_dict[c_name]) if c_name in row_dict and pd.notna(row_dict[c_name]) else 0
-                    with f_cols[i % 4]: f_in[c_name] = st.number_input(f"{c_name}", value=v, step=5, key=f"mf_{child_name}_{c_name}")
+                    with f_cols[i % 4]:
+                        f_in[c_name] = st.number_input(f"{c_name}", value=v, step=5, key=f"mf_{child_name}_{sel_date_str}_{c_name}")
+                
                 if st.form_submit_button("💾 체중/수유 수정 저장"):
                     if len(f_row) == 0:
                         new_r = {"날짜": sel_date_str, "아동": child_name, "몸무게": w_in}
@@ -424,11 +428,11 @@ def render_child_section(child_name, container):
                     st.toast(f"[{sel_date_str}] 수유/체중 수정 완료!")
                     st.rerun()
 
-            with st.form(key=f"m_poop_form_{child_name}"):
+            with st.form(key=f"m_poop_form_{child_name}_{sel_date_str}"):
                 st.write("💩 **지나간 배변 기록 추가**")
                 p1, p2 = st.columns(2)
-                with p1: pk = st.selectbox("종류", ["대변", "소변"], key=f"mpk_{child_name}")
-                with p2: pt = st.time_input("발생 시각", get_now_kst().time(), key=f"mpt_{child_name}")
+                with p1: pk = st.selectbox("종류", ["대변", "소변"], key=f"mpk_{child_name}_{sel_date_str}")
+                with p2: pt = st.time_input("발생 시각", get_now_kst().time(), key=f"mpt_{child_name}_{sel_date_str}")
                 if st.form_submit_button("➕ 배변 추가"):
                     t_s = pt.strftime("%H:%M")
                     new_p = {"날짜": sel_date_str, "아동": child_name, "시간": t_s, "종류": pk}
@@ -437,11 +441,11 @@ def render_child_section(child_name, container):
                     st.toast(f"[{sel_date_str}] {pk} 기록 추가!")
                     st.rerun()
 
-            with st.form(key=f"m_sleep_form_{child_name}"):
+            with st.form(key=f"m_sleep_form_{child_name}_{sel_date_str}"):
                 st.write("😴 **지나간 수면 기록 추가**")
                 s1, s2 = st.columns(2)
-                with s1: ss = st.time_input("수면 시작 시각", get_now_kst().time(), key=f"mss_{child_name}")
-                with s2: se = st.time_input("수면 종료 시각", get_now_kst().time(), key=f"mse_{child_name}")
+                with s1: ss = st.time_input("수면 시작 시각", get_now_kst().time(), key=f"mss_{child_name}_{sel_date_str}")
+                with s2: se = st.time_input("수면 종료 시각", get_now_kst().time(), key=f"mse_{child_name}_{sel_date_str}")
                 if st.form_submit_button("➕ 수면 추가"):
                     ts = datetime.combine(sel_date, ss)
                     te = datetime.combine(sel_date, se)
@@ -455,7 +459,7 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 5. 수유량 추이 그래프 (제목 겹침 완벽 수정) ---
+        # --- 5. 수유량 추이 그래프 ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
@@ -526,7 +530,7 @@ def render_child_section(child_name, container):
         )
         st.plotly_chart(fig_feed_trend, use_container_width=True)
 
-        # --- 체중 추이 그래프 (제목 겹침 완벽 수정) ---
+        # --- 체중 추이 그래프 ---
         fig_line = px.line(
             child_df, x="날짜", y="몸무게_보간", markers=True, 
             title=f"<b>{child_name} 일자별 체중 추이 (kg)</b>", height=320,
