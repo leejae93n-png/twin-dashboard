@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+import requests
+import json
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta, timezone
 import os
 from PIL import Image
-from streamlit_gsheets import GSheetsConnection
 
 # 한국 표준시(KST: UTC+9) 정의
 KST = timezone(timedelta(hours=9))
@@ -25,40 +26,51 @@ SCHEDULE_OPTIONS = {
     "일 5회 (4.5시간 텀)": ["06:00", "10:30", "15:00", "19:30", "23:00"]
 }
 
-# --- Google Sheets 연동 ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# --- Google Apps Script 연동 함수 ---
+GAS_URL = st.secrets.get("GAS_URL", "")
+
+def load_data_from_gas(sheet_name):
+    if not GAS_URL:
+        return pd.DataFrame()
+    try:
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}", timeout=8)
+        data = res.json()
+        if not data or len(data) <= 1:
+            return pd.DataFrame()
+        return pd.DataFrame(data[1:], columns=data[0])
+    except Exception:
+        return pd.DataFrame()
+
+def save_data_to_gas(sheet_name, df):
+    if not GAS_URL:
+        return
+    try:
+        df_clean = df.fillna(0)
+        rows = [df_clean.columns.tolist()] + df_clean.values.tolist()
+        payload = {"sheet": sheet_name, "rows": rows}
+        requests.post(GAS_URL, data=json.dumps(payload), timeout=8)
+    except Exception:
+        pass
 
 def load_feeding_data():
-    try:
-        df = conn.read(worksheet="Feeding", ttl=0)
-        return df.dropna(how="all")
-    except Exception:
+    df = load_data_from_gas("Feeding")
+    if df.empty:
         all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
         cols = ["날짜", "아동", "몸무게"] + sorted(all_possible_times)
         return pd.DataFrame(columns=cols)
+    return df
 
 def load_poop_data():
-    try:
-        df = conn.read(worksheet="Poop", ttl=0)
-        return df.dropna(how="all")
-    except Exception:
-        return pd.DataFrame(columns=["날짜", "아동", "시간", "종류"])
+    df = load_data_from_gas("Poop")
+    return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시간", "종류"])
 
 def load_sleep_data():
-    try:
-        df = conn.read(worksheet="Sleep", ttl=0)
-        return df.dropna(how="all")
-    except Exception:
-        return pd.DataFrame(columns=["날짜", "아동", "시작시간", "종류", "수면분"])
+    df = load_data_from_gas("Sleep")
+    return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시작시간", "종류", "수면분"])
 
-def save_feeding_data(df):
-    conn.update(worksheet="Feeding", data=df)
-
-def save_poop_data(df):
-    conn.update(worksheet="Poop", data=df)
-
-def save_sleep_data(df):
-    conn.update(worksheet="Sleep", data=df)
+def save_feeding_data(df): save_data_to_gas("Feeding", df)
+def save_poop_data(df): save_data_to_gas("Poop", df)
+def save_sleep_data(df): save_data_to_gas("Sleep", df)
 
 st.title("👶 쌍둥이 이른둥이 맞춤 수유 & 성장 대시보드")
 
@@ -131,10 +143,10 @@ def render_child_section(child_name, container):
                     st.rerun()
 
         today_str = get_now_kst().strftime("%Y-%m-%d")
-        child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
+        child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True) if not df_feeding.empty else pd.DataFrame()
         
-        if today_str not in child_df["날짜"].values:
-            last_weight = child_df["몸무게"].dropna().iloc[-1] if len(child_df["몸무게"].dropna()) > 0 else (3.5 if child_name == "원빈" else 4.1)
+        if df_feeding.empty or today_str not in child_df["날짜"].values:
+            last_weight = child_df["몸무게"].dropna().iloc[-1] if not child_df.empty and len(child_df["몸무게"].dropna()) > 0 else (3.5 if child_name == "원빈" else 4.1)
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": last_weight}
             for col in df_feeding.columns:
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
@@ -165,16 +177,17 @@ def render_child_section(child_name, container):
 
         st.caption(predict_msg)
 
-        today_poop_df = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == today_str)]
-        poop_cnt = len(today_poop_df[today_poop_df["종류"] == "대변"])
-        pee_cnt = len(today_poop_df[today_poop_df["종류"] == "소변"])
+        today_poop_df = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == today_str)] if not df_poop.empty else pd.DataFrame()
+        poop_cnt = len(today_poop_df[today_poop_df["종류"] == "대변"]) if not today_poop_df.empty else 0
+        pee_cnt = len(today_poop_df[today_poop_df["종류"] == "소변"]) if not today_poop_df.empty else 0
 
-        today_sleep_df = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str)]
-        total_sleep_min = today_sleep_df["수면분"].sum() if len(today_sleep_df) > 0 else 0
+        today_sleep_df = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str)] if not df_sleep.empty else pd.DataFrame()
+        total_sleep_min = today_sleep_df["수면분"].astype(int).sum() if not today_sleep_df.empty else 0
 
         target_total = min(int(weight * 180), 1000)
         actual_total = sum([int(today_row[c]) for c in current_time_cols if c in today_row and pd.notna(today_row[c])])
 
+        # 회당 비중 분석 추천 알고리즘
         slot_sums = {c: 0 for c in current_time_cols}
         slot_counts = {c: 0 for c in current_time_cols}
         for _, r in child_df.iterrows():
@@ -204,7 +217,7 @@ def render_child_section(child_name, container):
             next_feed_str = (l_time + timedelta(hours=3)).strftime("%H:%M")
 
         next_diaper_str = "점검 권장"
-        if len(today_poop_df) > 0:
+        if not today_poop_df.empty and len(today_poop_df) > 0:
             last_p_time_str = today_poop_df.iloc[-1]["시간"]
             try:
                 l_p_time = datetime.strptime(last_p_time_str, "%H:%M")
@@ -287,7 +300,7 @@ def render_child_section(child_name, container):
                 st.toast(f"🟡 {child_name} 소변 ({now_str}) 구글 시트 저장!", icon="🟡")
                 st.rerun()
         with btn_c4:
-            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"] == 0)]
+            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"] == 0)] if not df_sleep.empty else pd.DataFrame()
             if len(sleeping_row) == 0:
                 if st.button(f"😴 잠들었음", key=f"sleep_start_{child_name}", use_container_width=True):
                     now_str = get_now_kst().strftime("%H:%M")
@@ -313,7 +326,7 @@ def render_child_section(child_name, container):
         # 오늘 타임라인
         st.write("🕒 **오늘 배변 / 수면 타임라인**")
         combined_badges = []
-        if len(today_poop_df) > 0:
+        if not today_poop_df.empty and len(today_poop_df) > 0:
             for _, r in today_poop_df.iterrows():
                 icon = "💩" if r["종류"] == "대변" else "🟡"
                 bg_color = "#3d2b1f" if r["종류"] == "대변" else "#3a351e"
@@ -323,9 +336,9 @@ def render_child_section(child_name, container):
                     f'padding:3px 8px; margin:2px; border-radius:12px; font-size:13px; font-weight:bold;">'
                     f'{icon} {r["시간"]}</span>'
                 )
-        if len(today_sleep_df) > 0:
+        if not today_sleep_df.empty and len(today_sleep_df) > 0:
             for _, r in today_sleep_df.iterrows():
-                if r["수면분"] == 0:
+                if int(r["수면분"]) == 0:
                     combined_badges.append(
                         f'<span style="display:inline-block; background-color:#3f2d1c; border:1px solid #f59e0b; '
                         f'padding:3px 8px; margin:2px; border-radius:12px; font-size:13px; font-weight:bold;">'
@@ -349,9 +362,9 @@ def render_child_section(child_name, container):
             
             st.markdown(f"#### 🔍 **[{sel_date_str}] {child_name} 기록 상태**")
             
-            f_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str)]
-            p_df_sel = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == sel_date_str)]
-            s_df_sel = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == sel_date_str)]
+            f_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str)] if not df_feeding.empty else pd.DataFrame()
+            p_df_sel = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == sel_date_str)] if not df_poop.empty else pd.DataFrame()
+            s_df_sel = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == sel_date_str)] if not df_sleep.empty else pd.DataFrame()
 
             missing_times = []
             row_dict = f_row.iloc[0] if len(f_row) > 0 else {}
@@ -386,7 +399,7 @@ def render_child_section(child_name, container):
                     for s_idx, s_r in s_df_sel.iterrows():
                         c_a, c_b = st.columns([3, 1])
                         with c_a:
-                            if s_r["수면분"] == 0: st.write(f"- 😴 {s_r['시작시간']}~진행중")
+                            if int(s_r["수면분"]) == 0: st.write(f"- 😴 {s_r['시작시간']}~진행중")
                             else: st.write(f"- 😴 {s_r['시작시간']}~{s_r['종류']} ({s_r['수면분']}분)")
                         with c_b:
                             if st.button("🗑️ 삭제", key=f"del_s_{child_name}_{s_idx}"):
@@ -504,7 +517,7 @@ def render_child_section(child_name, container):
             hovertemplate="<b>목표 기준</b>: %{y} ml"
         ))
 
-        min_date = trend_df["날짜"].max()
+        min_date = trend_df["날짜"].max() if not trend_df.empty else today_str
         try: default_start = (datetime.strptime(min_date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
         except: default_start = trend_df["날짜"].min()
 
@@ -537,8 +550,8 @@ def render_child_section(child_name, container):
             hovertemplate="<b>날짜</b>: %{x}<br><b>몸무게</b>: %{y:.2f} kg %{customdata[0]}",
             line=dict(width=3, color="#3b82f6"), marker=dict(size=7)
         )
-        w_min = child_df["몸무게_보간"].min() - 0.15
-        w_max = child_df["몸무게_보간"].max() + 0.15
+        w_min = child_df["몸무게_보간"].min() - 0.15 if not child_df.empty else 3.0
+        w_max = child_df["몸무게_보간"].max() + 0.15 if not child_df.empty else 5.0
         fig_line.update_layout(
             title=dict(y=0.98, x=0.01, xanchor="left"),
             margin=dict(l=10, r=10, t=80, b=10),
