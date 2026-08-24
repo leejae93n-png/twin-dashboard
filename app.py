@@ -146,7 +146,8 @@ def render_child_section(child_name, container):
         child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True) if not df_feeding.empty else pd.DataFrame()
         
         if df_feeding.empty or today_str not in child_df["날짜"].values:
-            last_weight = child_df["몸무게"].dropna().iloc[-1] if not child_df.empty and len(child_df["몸무게"].dropna()) > 0 else (3.5 if child_name == "원빈" else 4.1)
+            default_w = 3.5 if child_name == "원빈" else 4.1
+            last_weight = child_df["몸무게"].dropna().iloc[-1] if not child_df.empty and "몸무게" in child_df and len(child_df["몸무게"].dropna()) > 0 else default_w
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": last_weight}
             for col in df_feeding.columns:
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
@@ -154,12 +155,16 @@ def render_child_section(child_name, container):
             save_feeding_data(df_feeding)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
+        # --- 수치형 변환 및 에러 방지 처리 ---
+        child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce")
         child_df["몸무게_원본"] = child_df["몸무게"]
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill()
+        if child_df["몸무게_보간"].isna().all():
+            child_df["몸무게_보간"] = 3.5 if child_name == "원빈" else 4.1
         child_df["추정여부"] = child_df["몸무게_원본"].isna().map({True: "(추정치)", False: ""})
 
         today_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str)].iloc[0]
-        weight = float(today_row["몸무게"]) if pd.notna(today_row["몸무게"]) else float(child_df[child_df["날짜"] == today_str].iloc[0]["몸무게_보간"])
+        weight = float(today_row["몸무게"]) if pd.notna(today_row["몸무게"]) and str(today_row["몸무게"]).strip() != "" else float(child_df[child_df["날짜"] == today_str].iloc[0]["몸무게_보간"])
         target_weight_for_next_step = 4.8
         
         if len(child_df) >= 2:
@@ -182,18 +187,17 @@ def render_child_section(child_name, container):
         pee_cnt = len(today_poop_df[today_poop_df["종류"] == "소변"]) if not today_poop_df.empty else 0
 
         today_sleep_df = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str)] if not df_sleep.empty else pd.DataFrame()
-        total_sleep_min = today_sleep_df["수면분"].astype(int).sum() if not today_sleep_df.empty else 0
+        total_sleep_min = pd.to_numeric(today_sleep_df["수면분"], errors="coerce").fillna(0).sum() if not today_sleep_df.empty else 0
 
         target_total = min(int(weight * 180), 1000)
-        actual_total = sum([int(today_row[c]) for c in current_time_cols if c in today_row and pd.notna(today_row[c])])
+        actual_total = sum([int(float(today_row[c])) for c in current_time_cols if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit()])
 
-        # 회당 비중 분석 추천 알고리즘
         slot_sums = {c: 0 for c in current_time_cols}
         slot_counts = {c: 0 for c in current_time_cols}
         for _, r in child_df.iterrows():
             for c in current_time_cols:
-                if c in r and pd.notna(r[c]) and int(r[c]) > 0:
-                    slot_sums[c] += int(r[c])
+                if c in r and pd.notna(r[c]) and str(r[c]).replace('.','',1).isdigit() and int(float(r[c])) > 0:
+                    slot_sums[c] += int(float(r[c]))
                     slot_counts[c] += 1
         
         slot_avgs = {c: (slot_sums[c] / slot_counts[c] if slot_counts[c] > 0 else (target_total / len(current_time_cols))) for c in current_time_cols}
@@ -203,11 +207,11 @@ def render_child_section(child_name, container):
         k1, k2, k3 = st.columns([1.1, 1.3, 1.2])
         with k1: st.metric("체중 / 기준", f"{weight:.2f} kg", "1kg당 180ml")
         with k2: st.metric("현재 수유 달성", f"{actual_total} / {target_total} ml", f"{actual_total - target_total} ml")
-        with k3: st.metric("오늘 배변/수면", f"💩{poop_cnt} 🟡{pee_cnt}", f"😴 {total_sleep_min//60}시간 {total_sleep_min%60}분")
+        with k3: st.metric("오늘 배변/수면", f"💩{poop_cnt} 🟡{pee_cnt}", f"😴 {int(total_sleep_min)//60}시간 {int(total_sleep_min)%60}분")
 
         last_feed_time = None
         for c in reversed(current_time_cols):
-            if c in today_row and pd.notna(today_row[c]) and int(today_row[c]) > 0:
+            if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() and int(float(today_row[c])) > 0:
                 last_feed_time = c
                 break
         
@@ -246,7 +250,7 @@ def render_child_section(child_name, container):
         q_c1, q_c2, q_c3 = st.columns([2, 2, 2])
         with q_c1: selected_slot = st.selectbox("수유 시간", current_time_cols, index=last_recorded_idx, key=f"q_slot_{child_name}")
         with q_c2:
-            cur_val = int(today_row[selected_slot]) if selected_slot in today_row and pd.notna(today_row[selected_slot]) else 0
+            cur_val = int(float(today_row[selected_slot])) if selected_slot in today_row and pd.notna(today_row[selected_slot]) and str(today_row[selected_slot]).replace('.','',1).isdigit() else 0
             default_feed = cur_val if cur_val > 0 else slot_recommended.get(selected_slot, 100)
             feed_val = st.number_input("수유량 (ml)", value=default_feed, step=5, key=f"q_val_{child_name}")
         with q_c3:
@@ -258,10 +262,9 @@ def render_child_section(child_name, container):
                 st.toast(f"✅ 구글 시트에 {child_name} [{selected_slot}] {feed_val}ml 저장 완료!", icon="🍼")
                 st.rerun()
 
-        # 수유 타임라인
         feed_badges = []
         for c in current_time_cols:
-            v = int(today_row[c]) if c in today_row and pd.notna(today_row[c]) else 0
+            v = int(float(today_row[c])) if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() else 0
             if v > 0:
                 feed_badges.append(
                     f'<span style="display:inline-block; background-color:#1e3a5f; border:1px solid #3b82f6; '
@@ -300,7 +303,7 @@ def render_child_section(child_name, container):
                 st.toast(f"🟡 {child_name} 소변 ({now_str}) 구글 시트 저장!", icon="🟡")
                 st.rerun()
         with btn_c4:
-            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"] == 0)] if not df_sleep.empty else pd.DataFrame()
+            sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"].astype(str) == "0")] if not df_sleep.empty else pd.DataFrame()
             if len(sleeping_row) == 0:
                 if st.button(f"😴 잠들었음", key=f"sleep_start_{child_name}", use_container_width=True):
                     now_str = get_now_kst().strftime("%H:%M")
@@ -323,7 +326,6 @@ def render_child_section(child_name, container):
                     st.toast(f"⏰ {child_name} 깨어남! 총 {duration_min}분 수면 저장", icon="⏰")
                     st.rerun()
 
-        # 오늘 타임라인
         st.write("🕒 **오늘 배변 / 수면 타임라인**")
         combined_badges = []
         if not today_poop_df.empty and len(today_poop_df) > 0:
@@ -338,7 +340,7 @@ def render_child_section(child_name, container):
                 )
         if not today_sleep_df.empty and len(today_sleep_df) > 0:
             for _, r in today_sleep_df.iterrows():
-                if int(r["수면분"]) == 0:
+                if str(r["수면분"]) == "0":
                     combined_badges.append(
                         f'<span style="display:inline-block; background-color:#3f2d1c; border:1px solid #f59e0b; '
                         f'padding:3px 8px; margin:2px; border-radius:12px; font-size:13px; font-weight:bold;">'
@@ -369,7 +371,7 @@ def render_child_section(child_name, container):
             missing_times = []
             row_dict = f_row.iloc[0] if len(f_row) > 0 else {}
             for t_col in current_time_cols:
-                val = int(row_dict[t_col]) if t_col in row_dict and pd.notna(row_dict[t_col]) else 0
+                val = int(float(row_dict[t_col])) if t_col in row_dict and pd.notna(row_dict[t_col]) and str(row_dict[t_col]).replace('.','',1).isdigit() else 0
                 if val == 0: missing_times.append(t_col)
 
             if missing_times:
@@ -399,7 +401,7 @@ def render_child_section(child_name, container):
                     for s_idx, s_r in s_df_sel.iterrows():
                         c_a, c_b = st.columns([3, 1])
                         with c_a:
-                            if int(s_r["수면분"]) == 0: st.write(f"- 😴 {s_r['시작시간']}~진행중")
+                            if str(s_r["수면분"]) == "0": st.write(f"- 😴 {s_r['시작시간']}~진행중")
                             else: st.write(f"- 😴 {s_r['시작시간']}~{s_r['종류']} ({s_r['수면분']}분)")
                         with c_b:
                             if st.button("🗑️ 삭제", key=f"del_s_{child_name}_{s_idx}"):
@@ -412,7 +414,7 @@ def render_child_section(child_name, container):
             st.divider()
 
             st.write(f"✍️ **[{sel_date_str}] 데이터 수정 & 추가**")
-            cur_w = float(row_dict["몸무게"]) if "몸무게" in row_dict and pd.notna(row_dict["몸무게"]) else weight
+            cur_w = float(row_dict["몸무게"]) if "몸무게" in row_dict and pd.notna(row_dict["몸무게"]) and str(row_dict["몸무게"]).replace('.','',1).isdigit() else weight
             
             with st.form(key=f"m_feed_form_{child_name}_{sel_date_str}"):
                 st.write("🍼 **수유량 및 체중 일괄 수정**")
@@ -420,7 +422,7 @@ def render_child_section(child_name, container):
                 f_in = {}
                 f_cols = st.columns(4)
                 for i, c_name in enumerate(current_time_cols):
-                    v = int(row_dict[c_name]) if c_name in row_dict and pd.notna(row_dict[c_name]) else 0
+                    v = int(float(row_dict[c_name])) if c_name in row_dict and pd.notna(row_dict[c_name]) and str(row_dict[c_name]).replace('.','',1).isdigit() else 0
                     with f_cols[i % 4]:
                         f_in[c_name] = st.number_input(f"{c_name}", value=v, step=5, key=f"mf_{child_name}_{sel_date_str}_{c_name}")
                 
@@ -478,8 +480,8 @@ def render_child_section(child_name, container):
             feed_count = 0
             details = []
             for tc in time_cols_in_df:
-                if pd.notna(r[tc]) and int(r[tc]) > 0:
-                    v = int(r[tc])
+                if pd.notna(r[tc]) and str(r[tc]).replace('.','',1).isdigit() and int(float(r[tc])) > 0:
+                    v = int(float(r[tc]))
                     day_total += v
                     feed_count += 1
                     details.append(f"{tc}:{v}ml")
