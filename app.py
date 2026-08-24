@@ -42,30 +42,40 @@ def parse_clean_date(val):
     except:
         return v
 
-def load_data_from_gas(sheet_name):
-    if not GAS_URL: 
+# --- 구글 연동 타임아웃 극복을 위한 메모리 캐싱 및 네트워크 타임아웃 확장(30초) ---
+def load_data_from_gas(sheet_name, force_reload=False):
+    session_key = f"gas_data_{sheet_name}"
+    if not force_reload and session_key in st.session_state:
+        return st.session_state[session_key]
+
+    if not GAS_URL:
         st.error("⚠️ Secrets 설정에서 GAS_URL을 등록해 주세요.")
         return pd.DataFrame()
+
     try:
         timestamp = int(time.time())
-        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=20, allow_redirects=True)
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=30, allow_redirects=True)
         if res.status_code != 200:
-            return pd.DataFrame()
+            return st.session_state.get(session_key, pd.DataFrame())
             
         data = res.json()
-        if not data or len(data) <= 1: return pd.DataFrame()
+        if not data or len(data) <= 1: 
+            df = pd.DataFrame()
+        else:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            df.columns = [format_time_col(c) for c in df.columns]
+            if "날짜" in df.columns:
+                df["날짜"] = df["날짜"].apply(parse_clean_date)
+                df = df[df["날짜"] != ""]
+            if "아동" in df.columns:
+                df["아동"] = df["아동"].astype(str).str.strip()
         
-        df = pd.DataFrame(data[1:], columns=data[0])
-        df.columns = [format_time_col(c) for c in df.columns]
-        
-        if "날짜" in df.columns:
-            df["날짜"] = df["날짜"].apply(parse_clean_date)
-            df = df[df["날짜"] != ""]
-        if "아동" in df.columns:
-            df["아동"] = df["아동"].astype(str).str.strip()
+        st.session_state[session_key] = df
         return df
     except Exception as e:
-        st.error(f"❌ 구글 시트 데이터 읽기 오류 [{sheet_name}]: {e}")
+        if session_key in st.session_state:
+            return st.session_state[session_key]
+        st.error(f"❌ 구글 시트 연결 시간 초과 [{sheet_name}]: {e}")
         return pd.DataFrame()
 
 def save_data_to_gas(sheet_name, df):
@@ -76,31 +86,31 @@ def save_data_to_gas(sheet_name, df):
         df_clean = df.fillna(0)
         rows = [df_clean.columns.tolist()] + df_clean.values.tolist()
         payload = {"sheet": sheet_name, "rows": rows}
-        
         headers = {'Content-Type': 'application/json'}
-        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=20, allow_redirects=True)
         
+        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=30, allow_redirects=True)
         if res.status_code == 200:
-            st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 동기화되었습니다!", icon="💾")
+            st.session_state[f"gas_data_{sheet_name}"] = df
+            st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 저장되었습니다!", icon="💾")
         else:
             st.warning(f"⚠️ 저장 통신 응답 코드: {res.status_code}")
     except Exception as e:
         st.error(f"❌ 구글 시트 저장 연동 오류: {e}")
 
-def load_feeding_data():
-    df = load_data_from_gas("Feeding")
+def load_feeding_data(force_reload=False):
+    df = load_data_from_gas("Feeding", force_reload)
     if df.empty:
         all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
         cols = ["날짜", "아동", "몸무게"] + sorted(all_possible_times)
         return pd.DataFrame(columns=cols)
     return df
 
-def load_poop_data():
-    df = load_data_from_gas("Poop")
+def load_poop_data(force_reload=False):
+    df = load_data_from_gas("Poop", force_reload)
     return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시간", "종류"])
 
-def load_sleep_data():
-    df = load_data_from_gas("Sleep")
+def load_sleep_data(force_reload=False):
+    df = load_data_from_gas("Sleep", force_reload)
     return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시작시간", "종류", "수면분"])
 
 def save_feeding_data(df): save_data_to_gas("Feeding", df)
@@ -113,11 +123,20 @@ today_dt = get_now_kst().date()
 chronological_days = (today_dt - BIRTH_DATE).days
 corrected_days = (today_dt - DUE_DATE).days
 
-st.info(
-    f"🍼 **성장 기준일 안내** (오늘: {today_dt.strftime('%Y-%m-%d')}) | "
-    f"**출생일령**: 생후 **{chronological_days}일차** | "
-    f"**교정일령**: 교정 **{corrected_days}일차**"
-)
+header_col1, header_col2 = st.columns([4, 1])
+with header_col1:
+    st.info(
+        f"🍼 **성장 기준일 안내** (오늘: {today_dt.strftime('%Y-%m-%d')}) | "
+        f"**출생일령**: 생후 **{chronological_days}일차** | "
+        f"**교정일령**: 교정 **{corrected_days}일차**"
+    )
+with header_col2:
+    if st.button("🔄 구글 시트 최신 데이터 불러오기", use_container_width=True):
+        load_feeding_data(force_reload=True)
+        load_poop_data(force_reload=True)
+        load_sleep_data(force_reload=True)
+        st.toast("구글 시트 최신 데이터 동기화 완료!", icon="🔄")
+        st.rerun()
 
 df_feeding = load_feeding_data()
 df_poop = load_poop_data()
@@ -398,7 +417,7 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 4. 수유량 추이 그래프 ---
+        # --- 4. 그래프 조회 기간 선택 컨트롤러 (신규) ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
@@ -431,6 +450,26 @@ def render_child_section(child_name, container):
         trend_df = pd.DataFrame(trend_records)
         all_dates = list(trend_df["날짜"].unique()) if not trend_df.empty else [today_str]
 
+        # 사용자 기간 조절 구분자 (라디오 버튼)
+        period_option = st.radio(
+            f"📊 **{child_name} 그래프 조회 기간**",
+            ["전체", "최근 1개월 (30일)", "최근 2주 (14일)", "최근 1주 (7일)"],
+            horizontal=True,
+            key=f"period_range_{child_name}"
+        )
+
+        # 기간 필터링 계산
+        total_len = len(all_dates)
+        if period_option == "최근 1주 (7일)":
+            start_idx = max(0, total_len - 7)
+        elif period_option == "최근 2주 (14일)":
+            start_idx = max(0, total_len - 14)
+        elif period_option == "최근 1개월 (30일)":
+            start_idx = max(0, total_len - 30)
+        else: # 전체
+            start_idx = 0
+
+        # --- 수유량 추이 그래프 ---
         fig_feed_trend = go.Figure()
         
         fig_feed_trend.add_trace(go.Bar(
@@ -451,12 +490,12 @@ def render_child_section(child_name, container):
 
         fig_feed_trend.update_layout(
             title=dict(text=f"<b>{child_name} 일자별 총 수유량 추이</b>", font=dict(size=16), y=0.98, x=0.01, xanchor="left"),
-            height=360, margin=dict(l=10, r=10, t=90, b=10),
+            height=360, margin=dict(l=10, r=10, t=80, b=10),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(
                 type="category",
                 categoryorder="category ascending",
-                range=[-0.5, len(all_dates) - 0.5], # 전체 날짜 범위 강제 고정
+                range=[start_idx - 0.5, total_len - 0.5],
                 autorange=False
             ),
             yaxis=dict(title="총 수유량 (ml)")
@@ -481,7 +520,7 @@ def render_child_section(child_name, container):
             xaxis=dict(
                 type="category",
                 categoryorder="category ascending",
-                range=[-0.5, len(all_dates) - 0.5], # 전체 날짜 범위 강제 고정
+                range=[start_idx - 0.5, total_len - 0.5],
                 autorange=False
             ),
             yaxis=dict(title="체중 (kg)", range=[w_min, w_max])
