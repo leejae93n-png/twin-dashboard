@@ -155,7 +155,6 @@ def render_child_section(child_name, container):
             save_feeding_data(df_feeding)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
-        # --- 수치형 변환 및 에러 방지 처리 ---
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce")
         child_df["몸무게_원본"] = child_df["몸무게"]
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill()
@@ -242,50 +241,25 @@ def render_child_section(child_name, container):
             f'</div>', unsafe_allow_html=True
         )
 
-        last_recorded_idx = closest_slot_idx
-
-        # --- 2. 수유량 입력 및 저장 ---
-        st.subheader("🍼 수유량 입력")
-        
-        q_c1, q_c2, q_c3 = st.columns([2, 2, 2])
-        with q_c1: selected_slot = st.selectbox("수유 시간", current_time_cols, index=last_recorded_idx, key=f"q_slot_{child_name}")
-        with q_c2:
-            cur_val = int(float(today_row[selected_slot])) if selected_slot in today_row and pd.notna(today_row[selected_slot]) and str(today_row[selected_slot]).replace('.','',1).isdigit() else 0
-            default_feed = cur_val if cur_val > 0 else slot_recommended.get(selected_slot, 100)
-            feed_val = st.number_input("수유량 (ml)", value=default_feed, step=5, key=f"q_val_{child_name}")
-        with q_c3:
-            st.write("")
-            st.write("")
-            if st.button(f"💾 수유 저장", key=f"q_btn_{child_name}", type="primary", use_container_width=True):
-                df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str), selected_slot] = feed_val
-                save_feeding_data(df_feeding)
-                st.toast(f"✅ 구글 시트에 {child_name} [{selected_slot}] {feed_val}ml 저장 완료!", icon="🍼")
-                st.rerun()
-
-        feed_badges = []
-        for c in current_time_cols:
-            v = int(float(today_row[c])) if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() else 0
-            if v > 0:
-                feed_badges.append(
-                    f'<span style="display:inline-block; background-color:#1e3a5f; border:1px solid #3b82f6; '
-                    f'padding:3px 8px; margin:2px; border-radius:12px; font-size:13px; font-weight:bold;">'
-                    f'🍼 {c}: {v}ml</span>'
-                )
-        if feed_badges: st.markdown("".join(feed_badges), unsafe_allow_html=True)
-
-        # --- 3. 실시간 1초 원클릭 기록 ---
-        st.markdown("---")
+        # --- 2. 통합 실시간 1초 원클릭 기록 (현재시간) ---
         st.subheader("⚡ 실시간 1초 원클릭 기록 (현재시간)")
         
-        btn_c1, btn_c2, btn_c3, btn_c4 = st.columns(4)
-        with btn_c1:
-            if st.button(f"🍼 수유 (지금)", key=f"now_feed_{child_name}", type="primary", use_container_width=True):
-                auto_slot = current_time_cols[get_closest_slot(current_time_cols, get_now_kst().time())]
-                auto_amount = slot_recommended.get(auto_slot, 100)
-                df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str), auto_slot] = auto_amount
+        # 수유량 설정 및 원클릭 버튼을 가로로 정렬
+        feed_col1, feed_col2, btn_c2, btn_c3, btn_c4 = st.columns([1.2, 1.8, 1, 1, 1])
+        
+        with feed_col1:
+            auto_slot = current_time_cols[closest_slot_idx]
+            cur_val = int(float(today_row[auto_slot])) if auto_slot in today_row and pd.notna(today_row[auto_slot]) and str(today_row[auto_slot]).replace('.','',1).isdigit() else 0
+            default_feed = cur_val if cur_val > 0 else slot_recommended.get(auto_slot, 100)
+            now_feed_val = st.number_input("수유량 (ml)", value=default_feed, step=5, key=f"now_val_{child_name}", label_visibility="collapsed")
+            
+        with feed_col2:
+            if st.button(f"🍼 수유 [{auto_slot}] 기록", key=f"now_feed_{child_name}", type="primary", use_container_width=True):
+                df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == today_str), auto_slot] = now_feed_val
                 save_feeding_data(df_feeding)
-                st.toast(f"🍼 구글 시트에 {child_name} [{auto_slot}] {auto_amount}ml 저장 완료!", icon="🍼")
+                st.toast(f"🍼 {child_name} [{auto_slot}] {now_feed_val}ml 구글 시트 저장 완료!", icon="🍼")
                 st.rerun()
+
         with btn_c2:
             if st.button(f"💩 대변 (지금)", key=f"now_poop_{child_name}", use_container_width=True):
                 now_str = get_now_kst().strftime("%H:%M")
@@ -294,6 +268,7 @@ def render_child_section(child_name, container):
                 save_poop_data(df_poop)
                 st.toast(f"💩 {child_name} 대변 ({now_str}) 구글 시트 저장!", icon="💩")
                 st.rerun()
+
         with btn_c3:
             if st.button(f"🟡 소변 (지금)", key=f"now_pee_{child_name}", use_container_width=True):
                 now_str = get_now_kst().strftime("%H:%M")
@@ -302,6 +277,7 @@ def render_child_section(child_name, container):
                 save_poop_data(df_poop)
                 st.toast(f"🟡 {child_name} 소변 ({now_str}) 구글 시트 저장!", icon="🟡")
                 st.rerun()
+
         with btn_c4:
             sleeping_row = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == today_str) & (df_sleep["수면분"].astype(str) == "0")] if not df_sleep.empty else pd.DataFrame()
             if len(sleeping_row) == 0:
@@ -325,6 +301,18 @@ def render_child_section(child_name, container):
                     save_sleep_data(df_sleep)
                     st.toast(f"⏰ {child_name} 깨어남! 총 {duration_min}분 수면 저장", icon="⏰")
                     st.rerun()
+
+        # 수유 배지 타임라인
+        feed_badges = []
+        for c in current_time_cols:
+            v = int(float(today_row[c])) if c in today_row and pd.notna(today_row[c]) and str(today_row[c]).replace('.','',1).isdigit() else 0
+            if v > 0:
+                feed_badges.append(
+                    f'<span style="display:inline-block; background-color:#1e3a5f; border:1px solid #3b82f6; '
+                    f'padding:3px 8px; margin:2px; border-radius:12px; font-size:13px; font-weight:bold;">'
+                    f'🍼 {c}: {v}ml</span>'
+                )
+        if feed_badges: st.markdown("".join(feed_badges), unsafe_allow_html=True)
 
         st.write("🕒 **오늘 배변 / 수면 타임라인**")
         combined_badges = []
@@ -356,7 +344,7 @@ def render_child_section(child_name, container):
         if combined_badges: st.markdown("".join(combined_badges), unsafe_allow_html=True)
         else: st.caption("오늘 기록된 배변 및 수면 내역이 없습니다.")
 
-        # --- 4. 📅 날짜별 통합 조회 & 과거/오늘 기록 수정 센터 ---
+        # --- 3. 📅 날짜별 통합 조회 & 과거/오늘 기록 수정 센터 ---
         st.markdown("---")
         with st.expander("📅 날짜별 통합 기록 조회 및 수정 센터 (클릭하여 열기)", expanded=False):
             sel_date = st.date_input("조회 및 수정할 날짜 선택", get_now_kst().date(), key=f"m_date_{child_name}")
@@ -471,7 +459,7 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 5. 수유량 추이 그래프 ---
+        # --- 4. 수유량 추이 그래프 ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
