@@ -173,7 +173,7 @@ def render_child_section(child_name, container):
         target_total = min(int(weight * 180), 1000)
         actual_total = sum([int(today_row[c]) for c in current_time_cols if c in today_row and pd.notna(today_row[c])])
 
-        # --- 현황 지표 (태블릿 짤림 방지 최적화) ---
+        # --- 현황 지표 ---
         k1, k2, k3 = st.columns([1.1, 1.3, 1.2])
         with k1:
             st.metric("체중 / 기준", f"{weight:.2f} kg", "1kg당 180ml")
@@ -268,6 +268,38 @@ def render_child_section(child_name, container):
                     save_sleep_data(df_sleep)
                     st.toast(f"😴 {child_name} 수면 {duration_min}분 기록 완료!", icon="😴")
                     st.rerun()
+
+        # --- 배변 및 수면 내역 삭제/수정 관리 메뉴 (신규 추가) ---
+        with st.expander("🛠️ 배변 & 수면 기록 관리 (삭제/수정)", expanded=False):
+            st.caption("잘못 입력된 배변 또는 수면 내역을 삭제할 수 있습니다.")
+            
+            # 배변 삭제
+            if len(today_poop_df) > 0:
+                st.write("📌 **오늘 배변 내역**")
+                for p_idx, p_row in today_poop_df.iterrows():
+                    del_col1, del_col2 = st.columns([3, 1])
+                    with del_col1:
+                        st.write(f"- {p_row['종류']} ({p_row['시간']})")
+                    with del_col2:
+                        if st.button("🗑️ 삭제", key=f"del_poop_{p_idx}"):
+                            df_poop = df_poop.drop(p_idx).reset_index(drop=True)
+                            save_poop_data(df_poop)
+                            st.toast("배변 내역이 삭제되었습니다.")
+                            st.rerun()
+            
+            # 수면 삭제
+            if len(today_sleep_df) > 0:
+                st.write("📌 **오늘 수면 내역**")
+                for s_idx, s_row in today_sleep_df.iterrows():
+                    del_col1, del_col2 = st.columns([3, 1])
+                    with del_col1:
+                        st.write(f"- 수면: {s_row['시작시간']} ~ {s_row['종류']} ({s_row['수면분']}분)")
+                    with del_col2:
+                        if st.button("🗑️ 삭제", key=f"del_sleep_{s_idx}"):
+                            df_sleep = df_sleep.drop(s_idx).reset_index(drop=True)
+                            save_sleep_data(df_sleep)
+                            st.toast("수면 내역이 삭제되었습니다.")
+                            st.rerun()
 
         # 배변 & 수면 타임라인
         st.write("🕒 **오늘 배변/수면 타임라인**")
