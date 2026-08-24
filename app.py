@@ -197,15 +197,16 @@ def render_child_section(child_name, container):
         else:
             child_df = pd.DataFrame()
         
-        if df_feeding.empty or child_df.empty or today_str not in child_df["날짜"].values:
+        # 오늘 날짜 행이 없더라도 전체 데이터를 덮어쓰지 않고 안전하게 메모리에서만 구성
+        if today_str not in child_df["날짜"].values if not child_df.empty else True:
             default_w = 3.5 if child_name == "원빈" else 4.1
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": default_w}
             for col in df_feeding.columns:
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
+            
+            # 구글 시트에 원본이 있는 경우에만 결합
             df_feeding = pd.concat([df_feeding, pd.DataFrame([new_row])], ignore_index=True)
-            save_feeding_data(df_feeding)
-            child_df = df_feeding[df_feeding["아동"] == child_name].copy()
-            child_df = child_df.sort_values(by="날짜").reset_index(drop=True)
+            child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
         default_base_weight = 3.5 if child_name == "원빈" else 4.1
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce").fillna(default_base_weight)
@@ -417,7 +418,7 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 4. 그래프 조회 기간 선택 컨트롤러 (신규) ---
+        # --- 4. 그래프 조회 기간 선택 컨트롤러 ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
@@ -450,7 +451,6 @@ def render_child_section(child_name, container):
         trend_df = pd.DataFrame(trend_records)
         all_dates = list(trend_df["날짜"].unique()) if not trend_df.empty else [today_str]
 
-        # 사용자 기간 조절 구분자 (라디오 버튼)
         period_option = st.radio(
             f"📊 **{child_name} 그래프 조회 기간**",
             ["전체", "최근 1개월 (30일)", "최근 2주 (14일)", "최근 1주 (7일)"],
@@ -458,7 +458,6 @@ def render_child_section(child_name, container):
             key=f"period_range_{child_name}"
         )
 
-        # 기간 필터링 계산
         total_len = len(all_dates)
         if period_option == "최근 1주 (7일)":
             start_idx = max(0, total_len - 7)
@@ -466,7 +465,7 @@ def render_child_section(child_name, container):
             start_idx = max(0, total_len - 14)
         elif period_option == "최근 1개월 (30일)":
             start_idx = max(0, total_len - 30)
-        else: # 전체
+        else:
             start_idx = 0
 
         # --- 수유량 추이 그래프 ---
