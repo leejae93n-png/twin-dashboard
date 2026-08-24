@@ -277,16 +277,14 @@ def render_child_section(child_name, container):
         if combined_badges: st.markdown("".join(combined_badges), unsafe_allow_html=True)
         else: st.caption("오늘 기록된 배변 및 수면 내역이 없습니다.")
 
-        # --- 4. 🛠️ 직관적인 기록 입력 & 수정 관리 (탭 형태) ---
+        # --- 4. 🛠️ 직관적인 기록 입력 & 수정 관리 ---
         st.markdown("---")
         st.write("🛠️ **기록 세부 추가 / 수정 관리**")
         
         tab1, tab2, tab3 = st.tabs(["➕ 지나간 기록 추가", "🗑️ 오늘 기록 수정/삭제", "⚙️ 체중 & 수유 일괄 수정"])
 
-        # TAB 1: 지나간 기록 추가
         with tab1:
             record_type = st.radio("추가할 기록 종류", ["💩/🟡 배변", "😴 수면"], horizontal=True, key=f"past_type_{child_name}")
-            
             if "배변" in record_type:
                 with st.form(key=f"past_poop_form_{child_name}"):
                     p_c1, p_c2 = st.columns(2)
@@ -315,11 +313,8 @@ def render_child_section(child_name, container):
                         st.toast(f"😴 수면 {duration_min}분 기록 추가 완료!", icon="😴")
                         st.rerun()
 
-        # TAB 2: 오늘 기록 수정/삭제
         with tab2:
             st.caption("잘못 입력된 내역 옆의 삭제 버튼을 누르면 즉시 제거됩니다.")
-            
-            # 배변 삭제
             if len(today_poop_df) > 0:
                 st.markdown("##### 📌 **오늘 배변 기록**")
                 for p_idx, p_row in today_poop_df.iterrows():
@@ -332,7 +327,6 @@ def render_child_section(child_name, container):
                             st.toast("배변 기록 삭제 완료!")
                             st.rerun()
 
-            # 수면 삭제
             if len(today_sleep_df) > 0:
                 st.markdown("##### 📌 **오늘 수면 기록**")
                 for s_idx, s_row in today_sleep_df.iterrows():
@@ -350,7 +344,6 @@ def render_child_section(child_name, container):
             if len(today_poop_df) == 0 and len(today_sleep_df) == 0:
                 st.info("오늘 삭제할 배변/수면 내역이 없습니다.")
 
-        # TAB 3: 체중 & 수유 일괄 수정
         with tab3:
             with st.form(key=f"full_form_{child_name}"):
                 new_weight = st.number_input("오늘 몸무게 (kg)", value=weight, step=0.05, format="%.2f")
@@ -369,51 +362,94 @@ def render_child_section(child_name, container):
 
         st.divider()
 
-        # --- 5. 전체 수유량 추이 그래프 ---
+        # --- 5. 수유량 추이 그래프 (1개월 기본 + 확대/축소 + 평균 1회 수유량 + 선명한 폰트) ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
         for _, r in child_df.iterrows():
             day_total = 0
+            feed_count = 0
             details = []
             for tc in time_cols_in_df:
                 if pd.notna(r[tc]) and int(r[tc]) > 0:
                     v = int(r[tc])
                     day_total += v
+                    feed_count += 1
                     details.append(f"{tc}:{v}ml")
             
             w_val = float(r["몸무게_보간"])
             target_v = min(int(w_val * 180), 1000)
             detail_str = " / ".join(details) if details else "기록없음"
+            avg_single_feed = round(day_total / feed_count) if feed_count > 0 else 0
             
             trend_records.append({
                 "날짜": r["날짜"],
                 "총수유량": day_total,
                 "목표수유량": target_v,
+                "평균1회수유량": avg_single_feed,
                 "시간대별내역": detail_str
             })
             
         trend_df = pd.DataFrame(trend_records)
 
+        # 복합 그래프 생성 (이중 Y축)
         fig_feed_trend = go.Figure()
+        
+        # [1] 총 수유량 막대 (선명한 흰색 폰트)
         fig_feed_trend.add_trace(go.Bar(
             x=trend_df["날짜"], y=trend_df["총수유량"], name="총 수유량(ml)",
-            marker_color="#4caf50", text=trend_df["총수유량"], textposition="auto",
+            marker_color="#2e7d32", 
+            text=trend_df["총수유량"], 
+            textposition="auto",
+            textfont=dict(color="white", size=13, family="Arial Black"),
             customdata=trend_df["시간대별내역"],
             hovertemplate="<b>날짜</b>: %{x}<br><b>총 수유량</b>: %{y} ml<br><b>시간대별</b>: %{customdata}"
         ))
+        
+        # [2] 목표 수유량 기준선 (주황색 점선)
         fig_feed_trend.add_trace(go.Scatter(
             x=trend_df["날짜"], y=trend_df["목표수유량"], name="목표 기준(ml)",
-            line=dict(color="#ff9800", width=2, dash="dash"),
+            line=dict(color="#f57c00", width=2, dash="dash"),
             hovertemplate="<b>목표 기준</b>: %{y} ml"
         ))
+
+        # [3] 평균 1회 수유량 (보라색 선)
+        fig_feed_trend.add_trace(go.Scatter(
+            x=trend_df["날짜"], y=trend_df["평균1회수유량"], name="평균 1회 수유량(ml)",
+            yaxis="y2",
+            line=dict(color="#ab47bc", width=2),
+            marker=dict(size=6),
+            hovertemplate="<b>평균 1회 수유량</b>: %{y} ml"
+        ))
+
+        # 기본 1개월 디폴트 시점 범위 설정
+        min_date = trend_df["날짜"].max()
+        try:
+            default_start = (datetime.strptime(min_date, "%Y-%m-%d") - timedelta(days=30)).strftime("%Y-%m-%d")
+        except:
+            default_start = trend_df["날짜"].min()
+
         fig_feed_trend.update_layout(
-            title=f"{child_name} 전체 일자별 수유량 추이 (ml)",
-            height=300, margin=dict(l=20, r=20, t=40, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            title=f"{child_name} 일자별 총 수유량 & 평균 1회 수유량 추이",
+            height=320, margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(
+                range=[default_start, min_date],
+                rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1개월", step="month", stepmode="backward"),
+                        dict(count=3, label="3개월", step="month", stepmode="backward"),
+                        dict(step="all", label="전체")
+                    ]),
+                    bgcolor="#262730", activecolor="#4caf50"
+                )
+            ),
+            yaxis=dict(title="총 수유량 (ml)"),
+            yaxis2=dict(title="1회 수유량 (ml)", overlaying="y", side="right", showgrid=False)
         )
         st.plotly_chart(fig_feed_trend, use_container_width=True)
 
+        # 체중 추이 그래프
         fig_line = px.line(
             child_df, x="날짜", y="몸무게_보간", markers=True, 
             title=f"{child_name} 일자별 체중 추이 (kg)", height=280,
