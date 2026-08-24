@@ -24,7 +24,7 @@ SCHEDULE_OPTIONS = {
     "일 5회 (4.5시간 텀)": ["06:00", "10:30", "15:00", "19:30", "23:00"]
 }
 
-GAS_URL = st.secrets.get("GAS_URL", "")
+GAS_URL = st.secrets.get("GAS_URL", "").strip()
 
 def format_time_col(col_name):
     col_str = str(col_name).strip()
@@ -44,12 +44,15 @@ def parse_clean_date(val):
 
 def load_data_from_gas(sheet_name):
     if not GAS_URL: 
-        st.error("⚠️ Streamlit Secrets에 GAS_URL이 설정되지 않았습니다.")
+        st.error("⚠️ Secrets 설정에서 GAS_URL을 등록해 주세요.")
         return pd.DataFrame()
     try:
         timestamp = int(time.time())
-        # GAS 리다이렉트 추적 허용 (allow_redirects=True)
         res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=10, allow_redirects=True)
+        if res.status_code != 200:
+            st.error(f"❌ 구글 시트 연결 실패 [{sheet_name}] 응답코드: {res.status_code}")
+            return pd.DataFrame()
+            
         data = res.json()
         if not data or len(data) <= 1: return pd.DataFrame()
         
@@ -63,7 +66,7 @@ def load_data_from_gas(sheet_name):
             df["아동"] = df["아동"].astype(str).str.strip()
         return df
     except Exception as e:
-        st.error(f"❌ 구글 시트 데이터 로드 실패 [{sheet_name}]: {e}")
+        st.error(f"❌ 구글 시트 데이터 읽기 오류 [{sheet_name}]: {e}")
         return pd.DataFrame()
 
 def save_data_to_gas(sheet_name, df):
@@ -75,16 +78,15 @@ def save_data_to_gas(sheet_name, df):
         rows = [df_clean.columns.tolist()] + df_clean.values.tolist()
         payload = {"sheet": sheet_name, "rows": rows}
         
-        # GAS POST 리다이렉트 방지 및 정상 통신 보장
         headers = {'Content-Type': 'application/json'}
         res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=12, allow_redirects=True)
         
-        if res.status_code == 200 and ("SUCCESS" in res.text or res.text == ""):
+        if res.status_code == 200:
             st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 동기화되었습니다!", icon="💾")
         else:
-            st.warning(f"⚠️ 구글 시트 저장 응답 확인 필요: {res.status_code} - {res.text}")
+            st.warning(f"⚠️ 저장 통신 응답 코드: {res.status_code}")
     except Exception as e:
-        st.error(f"❌ 구글 시트 통신 연결 오류: {e}")
+        st.error(f"❌ 구글 시트 저장 연동 오류: {e}")
 
 def load_feeding_data():
     df = load_data_from_gas("Feeding")
