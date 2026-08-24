@@ -286,9 +286,120 @@ def render_child_section(child_name, container):
                     save_sleep_data(df_sleep)
                     st.rerun()
 
+        # --- 3. 📅 날짜별 통합 기록 조회 및 수정 센터 (복구 완료) ---
+        st.markdown("---")
+        with st.expander("📅 날짜별 통합 기록 조회 및 수정 센터 (클릭하여 열기)", expanded=False):
+            sel_date = st.date_input("조회 및 수정할 날짜 선택", get_now_kst().date(), key=f"m_date_{child_name}")
+            sel_date_str = sel_date.strftime("%Y-%m-%d")
+            
+            st.markdown(f"#### 🔍 **[{sel_date_str}] {child_name} 기록 상태**")
+            
+            f_row = df_feeding[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str)] if not df_feeding.empty and "아동" in df_feeding.columns else pd.DataFrame()
+            p_df_sel = df_poop[(df_poop["아동"] == child_name) & (df_poop["날짜"] == sel_date_str)] if not df_poop.empty and "아동" in df_poop.columns else pd.DataFrame()
+            s_df_sel = df_sleep[(df_sleep["아동"] == child_name) & (df_sleep["날짜"] == sel_date_str)] if not df_sleep.empty and "아동" in df_sleep.columns else pd.DataFrame()
+
+            missing_times = []
+            row_dict = f_row.iloc[0] if len(f_row) > 0 else {}
+            for t_col in current_time_cols:
+                val_raw = pd.to_numeric(row_dict.get(t_col), errors='coerce') if t_col in row_dict else 0
+                val = int(val_raw) if pd.notna(val_raw) else 0
+                if val == 0: missing_times.append(t_col)
+
+            if missing_times:
+                m_str = ", ".join(missing_times)
+                st.warning(f"⚠️ **수유 미입력 시간대**: {m_str}")
+            else:
+                st.success("✅ 해당 날짜의 모든 시간대 수유 기록이 완료되었습니다!")
+
+            p_col, s_col = st.columns(2)
+            with p_col:
+                st.write("📌 **배변 내역 (삭제 가능)**")
+                if len(p_df_sel) > 0:
+                    for p_idx, p_r in p_df_sel.iterrows():
+                        c_a, c_b = st.columns([3, 1])
+                        with c_a: st.write(f"- {p_r['종류']} ({p_r['시간']})")
+                        with c_b:
+                            if st.button("🗑️ 삭제", key=f"del_p_{child_name}_{p_idx}"):
+                                df_poop = df_poop.drop(p_idx).reset_index(drop=True)
+                                save_poop_data(df_poop)
+                                st.rerun()
+                else: st.caption("배변 기록 없음")
+
+            with s_col:
+                st.write("📌 **수면 내역 (삭제 가능)**")
+                if len(s_df_sel) > 0:
+                    for s_idx, s_r in s_df_sel.iterrows():
+                        c_a, c_b = st.columns([3, 1])
+                        with c_a:
+                            if str(s_r["수면분"]) == "0": st.write(f"- 😴 {s_r['시작시간']}~진행중")
+                            else: st.write(f"- 😴 {s_r['시작시간']}~{s_r['종류']} ({s_r['수면분']}분)")
+                        with c_b:
+                            if st.button("🗑️ 삭제", key=f"del_s_{child_name}_{s_idx}"):
+                                df_sleep = df_sleep.drop(s_idx).reset_index(drop=True)
+                                save_sleep_data(df_sleep)
+                                st.rerun()
+                else: st.caption("수면 기록 없음")
+
+            st.divider()
+
+            st.write(f"✍️ **[{sel_date_str}] 데이터 수정 & 추가**")
+            w_raw = pd.to_numeric(row_dict.get("몸무게"), errors='coerce') if "몸무게" in row_dict else weight
+            cur_w = float(w_raw) if pd.notna(w_raw) else weight
+            
+            with st.form(key=f"m_feed_form_{child_name}_{sel_date_str}"):
+                st.write("🍼 **수유량 및 체중 일괄 수정**")
+                w_in = st.number_input("해당 날짜 체중 (kg)", value=cur_w, step=0.05, format="%.2f", key=f"mw_{child_name}_{sel_date_str}")
+                f_in = {}
+                f_cols = st.columns(4)
+                for i, c_name in enumerate(current_time_cols):
+                    v_raw = pd.to_numeric(row_dict.get(c_name), errors='coerce') if c_name in row_dict else 0
+                    v = int(v_raw) if pd.notna(v_raw) else 0
+                    with f_cols[i % 4]:
+                        f_in[c_name] = st.number_input(f"{c_name}", value=v, step=5, key=f"mf_{child_name}_{sel_date_str}_{c_name}")
+                
+                if st.form_submit_button("💾 체중/수유 수정 저장"):
+                    if len(f_row) == 0:
+                        new_r = {"날짜": sel_date_str, "아동": child_name, "몸무게": w_in}
+                        for col in df_feeding.columns:
+                            if col not in ["날짜", "아동", "몸무게"]: new_r[col] = f_in.get(col, 0)
+                        df_feeding = pd.concat([df_feeding, pd.DataFrame([new_r])], ignore_index=True)
+                    else:
+                        df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str), "몸무게"] = w_in
+                        for c_name, v in f_in.items():
+                            df_feeding.loc[(df_feeding["아동"] == child_name) & (df_feeding["날짜"] == sel_date_str), c_name] = v
+                    save_feeding_data(df_feeding)
+                    st.rerun()
+
+            with st.form(key=f"m_poop_form_{child_name}_{sel_date_str}"):
+                st.write("💩 **지나간 배변 기록 추가**")
+                p1, p2 = st.columns(2)
+                with p1: pk = st.selectbox("종류", ["대변", "소변"], key=f"mpk_{child_name}_{sel_date_str}")
+                with p2: pt = st.time_input("발생 시각", get_now_kst().time(), key=f"mpt_{child_name}_{sel_date_str}")
+                if st.form_submit_button("➕ 배변 추가"):
+                    t_s = pt.strftime("%H:%M")
+                    new_p = {"날짜": sel_date_str, "아동": child_name, "시간": t_s, "종류": pk}
+                    df_poop = pd.concat([df_poop, pd.DataFrame([new_p])], ignore_index=True)
+                    save_poop_data(df_poop)
+                    st.rerun()
+
+            with st.form(key=f"m_sleep_form_{child_name}_{sel_date_str}"):
+                st.write("😴 **지나간 수면 기록 추가**")
+                s1, s2 = st.columns(2)
+                with s1: ss = st.time_input("수면 시작 시각", get_now_kst().time(), key=f"mss_{child_name}_{sel_date_str}")
+                with s2: se = st.time_input("수면 종료 시각", get_now_kst().time(), key=f"mse_{child_name}_{sel_date_str}")
+                if st.form_submit_button("➕ 수면 추가"):
+                    ts = datetime.combine(sel_date, ss)
+                    te = datetime.combine(sel_date, se)
+                    if te < ts: te = te.replace(day=te.day + 1)
+                    dur = int((te - ts).total_seconds() / 60)
+                    new_s = {"날짜": sel_date_str, "아동": child_name, "시작시간": ss.strftime("%H:%M"), "종류": se.strftime("%H:%M"), "수면분": dur}
+                    df_sleep = pd.concat([df_sleep, pd.DataFrame([new_s])], ignore_index=True)
+                    save_sleep_data(df_sleep)
+                    st.rerun()
+
         st.divider()
 
-        # --- 3. 수유량 추이 그래프 ---
+        # --- 4. 수유량 추이 그래프 ---
         time_cols_in_df = [c for c in child_df.columns if c not in ["날짜", "아동", "몸무게", "몸무게_원본", "몸무게_보간", "추정여부"]]
         
         trend_records = []
