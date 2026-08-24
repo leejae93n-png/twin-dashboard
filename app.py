@@ -42,21 +42,17 @@ def parse_clean_date(val):
     except:
         return v
 
-# 타임아웃 25초 확장 및 데이터 캐싱 적용 (ttl=5초)
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_gas_data(sheet_name, gas_url):
-    timestamp = int(time.time())
-    res = requests.get(f"{gas_url}?sheet={sheet_name}&_t={timestamp}", timeout=25, allow_redirects=True)
-    if res.status_code != 200:
-        return None
-    return res.json()
-
 def load_data_from_gas(sheet_name):
     if not GAS_URL: 
         st.error("⚠️ Secrets 설정에서 GAS_URL을 등록해 주세요.")
         return pd.DataFrame()
     try:
-        data = fetch_gas_data(sheet_name, GAS_URL)
+        timestamp = int(time.time())
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=20, allow_redirects=True)
+        if res.status_code != 200:
+            return pd.DataFrame()
+            
+        data = res.json()
         if not data or len(data) <= 1: return pd.DataFrame()
         
         df = pd.DataFrame(data[1:], columns=data[0])
@@ -82,10 +78,9 @@ def save_data_to_gas(sheet_name, df):
         payload = {"sheet": sheet_name, "rows": rows}
         
         headers = {'Content-Type': 'application/json'}
-        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=25, allow_redirects=True)
+        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=20, allow_redirects=True)
         
         if res.status_code == 200:
-            st.cache_data.clear() # 저장 후 캐시 초기화
             st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 동기화되었습니다!", icon="💾")
         else:
             st.warning(f"⚠️ 저장 통신 응답 코드: {res.status_code}")
@@ -434,6 +429,7 @@ def render_child_section(child_name, container):
             })
             
         trend_df = pd.DataFrame(trend_records)
+        all_dates = list(trend_df["날짜"].unique()) if not trend_df.empty else [today_str]
 
         fig_feed_trend = go.Figure()
         
@@ -459,14 +455,9 @@ def render_child_section(child_name, container):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             xaxis=dict(
                 type="category",
-                rangeselector=dict(
-                    buttons=list([
-                        dict(count=1, label="1개월", step="month", stepmode="backward"),
-                        dict(count=3, label="3개월", step="month", stepmode="backward"),
-                        dict(step="all", label="전체")
-                    ]),
-                    bgcolor="#262730", activecolor="#4caf50", y=1.22, x=0.01
-                )
+                categoryorder="category ascending",
+                range=[-0.5, len(all_dates) - 0.5], # 전체 날짜 범위 강제 고정
+                autorange=False
             ),
             yaxis=dict(title="총 수유량 (ml)")
         )
@@ -489,14 +480,9 @@ def render_child_section(child_name, container):
             margin=dict(l=10, r=10, t=80, b=10),
             xaxis=dict(
                 type="category",
-                rangeselector=dict(
-                    buttons=list([
-                        dict(count=1, label="1개월", step="month", stepmode="backward"),
-                        dict(count=3, label="3개월", step="month", stepmode="backward"),
-                        dict(step="all", label="전체")
-                    ]),
-                    bgcolor="#262730", activecolor="#3b82f6", y=1.22, x=0.01
-                )
+                categoryorder="category ascending",
+                range=[-0.5, len(all_dates) - 0.5], # 전체 날짜 범위 강제 고정
+                autorange=False
             ),
             yaxis=dict(title="체중 (kg)", range=[w_min, w_max])
         )
