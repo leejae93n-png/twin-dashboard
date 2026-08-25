@@ -42,48 +42,45 @@ def parse_clean_date(val):
     except:
         return v
 
-# --- 근본적 해결: 중복 컬럼 및 타임아웃 예외처리 방어 로직 ---
-def load_data_from_gas(sheet_name, force_reload=False):
-    session_key = f"gas_data_{sheet_name}"
-    if not force_reload and session_key in st.session_state:
-        return st.session_state[session_key]
-
+# --- 캐시를 완전히 제거하고 매번 구글 시트에서 최신 데이터를 가져오는 실시간 함수 ---
+def load_data_from_gas(sheet_name):
     if not GAS_URL:
         return pd.DataFrame()
 
     try:
-        timestamp = int(time.time())
+        # 타임스탬프를 붙여 브라우저 및 구글 서버의 캐싱을 원천 차단하고 최신 데이터 보장
+        timestamp = int(time.time() * 1000)
         res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=35, allow_redirects=True)
         if res.status_code != 200:
-            return st.session_state.get(session_key, pd.DataFrame())
+            return pd.DataFrame()
             
         data = res.json()
         if not data or len(data) <= 1: 
-            df = pd.DataFrame()
-        else:
-            raw_columns = [format_time_col(c) for c in data[0]]
-            # 판다스 중복 컬럼 에러 방지 (컬럼명에 번호를 붙여 고유하게 만듦)
-            seen = {}
-            unique_columns = []
-            for col in raw_columns:
-                if col in seen:
-                    seen[col] += 1
-                    unique_columns.append(f"{col}_{seen[col]}")
-                else:
-                    seen[col] = 0
-                    unique_columns.append(col)
-            
-            df = pd.DataFrame(data[1:], columns=unique_columns)
-            if "날짜" in df.columns:
-                df["날짜"] = df["날짜"].apply(parse_clean_date)
-                df = df[df["날짜"] != ""]
-            if "아동" in df.columns:
-                df["아동"] = df["아동"].astype(str).str.strip()
+            return pd.DataFrame()
         
-        st.session_state[session_key] = df
+        raw_columns = [format_time_col(c) for c in data[0]]
+        # 판다스 중복 컬럼 에러 방지 (고유화)
+        seen = {}
+        unique_columns = []
+        for col in raw_columns:
+            if col in seen:
+                seen[col] += 1
+                unique_columns.append(f"{col}_{seen[col]}")
+            else:
+                seen[col] = 0
+                unique_columns.append(col)
+        
+        df = pd.DataFrame(data[1:], columns=unique_columns)
+        if "날짜" in df.columns:
+            df["날짜"] = df["날짜"].apply(parse_clean_date)
+            df = df[df["날짜"] != ""]
+        if "아동" in df.columns:
+            df["아동"] = df["아동"].astype(str).str.strip()
+            
         return df
-    except Exception:
-        return st.session_state.get(session_key, pd.DataFrame())
+    except Exception as e:
+        st.error(f"❌ 구글 시트 연동 오류 [{sheet_name}]: {e}")
+        return pd.DataFrame()
 
 def save_data_to_gas(sheet_name, df):
     if not GAS_URL: return
@@ -95,13 +92,12 @@ def save_data_to_gas(sheet_name, df):
         
         res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=35, allow_redirects=True)
         if res.status_code == 200:
-            st.session_state[f"gas_data_{sheet_name}"] = df
-            st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 저장되었습니다!", icon="💾")
+            st.toast(f"✅ [{sheet_name}] 구글 시트에 실시간 반영되었습니다!", icon="💾")
     except Exception as e:
         st.error(f"❌ 구글 시트 저장 연동 오류: {e}")
 
-def load_feeding_data(force_reload=False):
-    df = load_data_from_gas("Feeding", force_reload)
+def load_feeding_data():
+    df = load_data_from_gas("Feeding")
     all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
     cols = ["날짜", "아동", "몸무게"] + sorted(all_possible_times)
     if df.empty:
@@ -111,12 +107,12 @@ def load_feeding_data(force_reload=False):
             df[c] = 0
     return df
 
-def load_poop_data(force_reload=False):
-    df = load_data_from_gas("Poop", force_reload)
+def load_poop_data():
+    df = load_data_from_gas("Poop")
     return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시간", "종류"])
 
-def load_sleep_data(force_reload=False):
-    df = load_data_from_gas("Sleep", force_reload)
+def load_sleep_data():
+    df = load_data_from_gas("Sleep")
     return df if not df.empty else pd.DataFrame(columns=["날짜", "아동", "시작시간", "종류", "수면분"])
 
 def save_feeding_data(df): save_data_to_gas("Feeding", df)
@@ -137,13 +133,10 @@ with header_col1:
         f"**교정일령**: 교정 **{corrected_days}일차**"
     )
 with header_col2:
-    if st.button("🔄 데이터 새로고침", use_container_width=True):
-        load_feeding_data(force_reload=True)
-        load_poop_data(force_reload=True)
-        load_sleep_data(force_reload=True)
-        st.toast("최신 데이터 동기화 완료!", icon="🔄")
+    if st.button("🔄 최신 데이터 동기화", use_container_width=True):
         st.rerun()
 
+# 매번 구글 시트에서 직접 가져옴
 df_feeding = load_feeding_data()
 df_poop = load_poop_data()
 df_sleep = load_sleep_data()
@@ -202,16 +195,23 @@ def render_child_section(child_name, container):
         else:
             child_df = pd.DataFrame()
         
+        default_base_weight = 3.5 if child_name == "원빈" else 4.1
+
         if child_df.empty or today_str not in child_df["날짜"].values:
-            default_w = 3.5 if child_name == "원빈" else 4.1
-            new_row = {"날짜": today_str, "아동": child_name, "몸무게": default_w}
+            # 기존 마지막 기록의 몸무게를 가져오거나 없으면 기본값 사용
+            last_w = default_base_weight
+            if not child_df.empty:
+                valid_weights = pd.to_numeric(child_df["몸무게"], errors="coerce").dropna()
+                if not valid_weights.empty:
+                    last_w = valid_weights.iloc[-1]
+            
+            new_row = {"날짜": today_str, "아동": child_name, "몸무게": last_w}
             for col in df_feeding.columns:
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
             
             df_feeding = pd.concat([df_feeding, pd.DataFrame([new_row])], ignore_index=True)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
-        default_base_weight = 3.5 if child_name == "원빈" else 4.1
         child_df["몸무게"] = pd.to_numeric(child_df["몸무게"], errors="coerce").fillna(default_base_weight)
         child_df["몸무게_보간"] = child_df["몸무게"].interpolate(method="linear").bfill().ffill().fillna(default_base_weight)
 
