@@ -42,6 +42,7 @@ def parse_clean_date(val):
     except:
         return v
 
+# --- 근본적 해결: 중복 컬럼 및 타임아웃 예외처리 방어 로직 ---
 def load_data_from_gas(sheet_name, force_reload=False):
     session_key = f"gas_data_{sheet_name}"
     if not force_reload and session_key in st.session_state:
@@ -60,8 +61,19 @@ def load_data_from_gas(sheet_name, force_reload=False):
         if not data or len(data) <= 1: 
             df = pd.DataFrame()
         else:
-            df = pd.DataFrame(data[1:], columns=data[0])
-            df.columns = [format_time_col(c) for c in df.columns]
+            raw_columns = [format_time_col(c) for c in data[0]]
+            # 판다스 중복 컬럼 에러 방지 (컬럼명에 번호를 붙여 고유하게 만듦)
+            seen = {}
+            unique_columns = []
+            for col in raw_columns:
+                if col in seen:
+                    seen[col] += 1
+                    unique_columns.append(f"{col}_{seen[col]}")
+                else:
+                    seen[col] = 0
+                    unique_columns.append(col)
+            
+            df = pd.DataFrame(data[1:], columns=unique_columns)
             if "날짜" in df.columns:
                 df["날짜"] = df["날짜"].apply(parse_clean_date)
                 df = df[df["날짜"] != ""]
