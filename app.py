@@ -42,19 +42,17 @@ def parse_clean_date(val):
     except:
         return v
 
-# --- 구글 연동 타임아웃 극복을 위한 메모리 캐싱 및 네트워크 타임아웃 확장(30초) ---
 def load_data_from_gas(sheet_name, force_reload=False):
     session_key = f"gas_data_{sheet_name}"
     if not force_reload and session_key in st.session_state:
         return st.session_state[session_key]
 
     if not GAS_URL:
-        st.error("⚠️ Secrets 설정에서 GAS_URL을 등록해 주세요.")
         return pd.DataFrame()
 
     try:
         timestamp = int(time.time())
-        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=30, allow_redirects=True)
+        res = requests.get(f"{GAS_URL}?sheet={sheet_name}&_t={timestamp}", timeout=35, allow_redirects=True)
         if res.status_code != 200:
             return st.session_state.get(session_key, pd.DataFrame())
             
@@ -72,37 +70,33 @@ def load_data_from_gas(sheet_name, force_reload=False):
         
         st.session_state[session_key] = df
         return df
-    except Exception as e:
-        if session_key in st.session_state:
-            return st.session_state[session_key]
-        st.error(f"❌ 구글 시트 연결 시간 초과 [{sheet_name}]: {e}")
-        return pd.DataFrame()
+    except Exception:
+        return st.session_state.get(session_key, pd.DataFrame())
 
 def save_data_to_gas(sheet_name, df):
-    if not GAS_URL:
-        st.error("⚠️ GAS_URL 미설정으로 저장이 취소되었습니다.")
-        return
+    if not GAS_URL: return
     try:
         df_clean = df.fillna(0)
         rows = [df_clean.columns.tolist()] + df_clean.values.tolist()
         payload = {"sheet": sheet_name, "rows": rows}
         headers = {'Content-Type': 'application/json'}
         
-        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=30, allow_redirects=True)
+        res = requests.post(GAS_URL, data=json.dumps(payload), headers=headers, timeout=35, allow_redirects=True)
         if res.status_code == 200:
             st.session_state[f"gas_data_{sheet_name}"] = df
             st.toast(f"✅ [{sheet_name}] 구글 시트에 안전하게 저장되었습니다!", icon="💾")
-        else:
-            st.warning(f"⚠️ 저장 통신 응답 코드: {res.status_code}")
     except Exception as e:
         st.error(f"❌ 구글 시트 저장 연동 오류: {e}")
 
 def load_feeding_data(force_reload=False):
     df = load_data_from_gas("Feeding", force_reload)
+    all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
+    cols = ["날짜", "아동", "몸무게"] + sorted(all_possible_times)
     if df.empty:
-        all_possible_times = list(set([t for sch in SCHEDULE_OPTIONS.values() for t in sch]))
-        cols = ["날짜", "아동", "몸무게"] + sorted(all_possible_times)
         return pd.DataFrame(columns=cols)
+    for c in cols:
+        if c not in df.columns:
+            df[c] = 0
     return df
 
 def load_poop_data(force_reload=False):
@@ -131,11 +125,11 @@ with header_col1:
         f"**교정일령**: 교정 **{corrected_days}일차**"
     )
 with header_col2:
-    if st.button("🔄 구글 시트 최신 데이터 불러오기", use_container_width=True):
+    if st.button("🔄 데이터 새로고침", use_container_width=True):
         load_feeding_data(force_reload=True)
         load_poop_data(force_reload=True)
         load_sleep_data(force_reload=True)
-        st.toast("구글 시트 최신 데이터 동기화 완료!", icon="🔄")
+        st.toast("최신 데이터 동기화 완료!", icon="🔄")
         st.rerun()
 
 df_feeding = load_feeding_data()
@@ -173,7 +167,6 @@ def render_child_section(child_name, container):
     global df_feeding, df_poop, df_sleep
     
     with container:
-        # --- 1. 프로필 영역 ---
         img_filename_png = f"profile_{child_name}.png"
         img_filename_jpg = f"profile_{child_name}.jpg"
         
@@ -197,14 +190,12 @@ def render_child_section(child_name, container):
         else:
             child_df = pd.DataFrame()
         
-        # 오늘 날짜 행이 없더라도 전체 데이터를 덮어쓰지 않고 안전하게 메모리에서만 구성
-        if today_str not in child_df["날짜"].values if not child_df.empty else True:
+        if child_df.empty or today_str not in child_df["날짜"].values:
             default_w = 3.5 if child_name == "원빈" else 4.1
             new_row = {"날짜": today_str, "아동": child_name, "몸무게": default_w}
             for col in df_feeding.columns:
                 if col not in ["날짜", "아동", "몸무게"]: new_row[col] = 0
             
-            # 구글 시트에 원본이 있는 경우에만 결합
             df_feeding = pd.concat([df_feeding, pd.DataFrame([new_row])], ignore_index=True)
             child_df = df_feeding[df_feeding["아동"] == child_name].copy().sort_values(by="날짜").reset_index(drop=True)
 
@@ -256,7 +247,7 @@ def render_child_section(child_name, container):
         
         with feed_col1:
             auto_slot = current_time_cols[closest_slot_idx]
-            cur_val_raw = pd.to_numeric(today_row[auto_slot], errors='coerce') if auto_slot in today_row else 0
+            cur_val_raw = pd.to_numeric(today_row.get(auto_slot), errors='coerce') if auto_slot in today_row else 0
             cur_val = int(cur_val_raw) if pd.notna(cur_val_raw) else 0
             default_feed = cur_val if cur_val > 0 else slot_recommended.get(auto_slot, 100)
             now_feed_val = st.number_input("수유량 (ml)", value=default_feed, step=5, key=f"now_val_{child_name}", label_visibility="collapsed")
